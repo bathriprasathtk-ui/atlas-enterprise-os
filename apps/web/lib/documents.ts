@@ -1,4 +1,8 @@
 import { supabase } from "./supabaseClient";
+import {
+  createSignedDocumentUrl,
+  removeStoredDocument,
+} from "./storage";
 
 export type Document = {
   id: string;
@@ -12,13 +16,47 @@ export type Document = {
 };
 
 /* =========================================================
+   AUTH HELPERS
+========================================================= */
+
+/**
+ * Returns the current user's id, or null when signed out.
+ */
+async function getCurrentUserId(): Promise<string | null> {
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  return user?.id ?? null;
+}
+
+/**
+ * Explicit ownership guard used by every storage operation.
+ * Storage paths are user-scoped: `{userId}/{timestamp}-{filename}`.
+ */
+function assertOwnedPath(path: string, userId: string) {
+  if (!path || !path.startsWith(`${userId}/`)) {
+    throw new Error("You do not have access to this document.");
+  }
+}
+
+/* =========================================================
    GET DOCUMENTS
 ========================================================= */
 
 export async function getDocuments(): Promise<Document[]> {
+  const userId = await getCurrentUserId();
+
+  /* Signed out: return an empty list instead of erroring. */
+  if (!userId) {
+    return [];
+  }
+
   const { data, error } = await supabase
     .from("documents")
     .select("*")
+    /* Explicit per-user scoping (defense in depth on top of RLS). */
+    .eq("uploaded_by", userId)
     .order("created_at", {
       ascending: false,
     });
@@ -32,23 +70,13 @@ export async function getDocuments(): Promise<Document[]> {
 }
 
 /* =========================================================
-   GET STORAGE URL
+   SIGNED URL (replaces the old public URL helper)
 ========================================================= */
 
-export function getDocumentUrl(fileName: string): string {
-  if (!fileName) {
-    throw new Error("File name is missing.");
-  }
-
-  const { data } = supabase.storage
-    .from("documents")
-    .getPublicUrl(fileName);
-
-  if (!data?.publicUrl) {
-    throw new Error("Could not generate document URL.");
-  }
-
-  return data.publicUrl;
+export async function getDocumentSignedUrl(
+  fileName: string
+): Promise<string> {
+  return createSignedDocumentUrl(fileName);
 }
 
 /* =========================================================
@@ -56,9 +84,17 @@ export function getDocumentUrl(fileName: string): string {
 ========================================================= */
 
 export async function downloadDocument(fileName: string) {
+  const userId = await getCurrentUserId();
+
+  if (!userId) {
+    throw new Error("You must be signed in to download documents.");
+  }
+
   if (!fileName) {
     throw new Error("File name is missing.");
   }
+
+  assertOwnedPath(fileName, userId);
 
   const { data, error } = await supabase.storage
     .from("documents")
@@ -80,6 +116,12 @@ export async function deleteDocument(
   id: string,
   fileName: string
 ) {
+  const userId = await getCurrentUserId();
+
+  if (!userId) {
+    throw new Error("You must be signed in to delete documents.");
+  }
+
   if (!id) {
     throw new Error("Document ID is missing.");
   }
@@ -88,27 +130,20 @@ export async function deleteDocument(
     throw new Error("File name is missing.");
   }
 
+  assertOwnedPath(fileName, userId);
+
   /* ---------- DELETE FROM STORAGE ---------- */
 
-  const { error: storageError } = await supabase.storage
-    .from("documents")
-    .remove([fileName]);
-
-  if (storageError) {
-    console.error(
-      "Storage delete error:",
-      storageError
-    );
-
-    throw storageError;
-  }
+  await removeStoredDocument(fileName);
 
   /* ---------- DELETE DATABASE RECORD ---------- */
 
   const { error: dbError } = await supabase
     .from("documents")
     .delete()
-    .eq("id", id);
+    .eq("id", id)
+    /* Explicit per-user scoping (defense in depth on top of RLS). */
+    .eq("uploaded_by", userId);
 
   if (dbError) {
     console.error(

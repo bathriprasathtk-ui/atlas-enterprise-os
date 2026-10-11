@@ -23,13 +23,30 @@ export type CreateProjectInput = {
   progress?: number;
 };
 
+async function getCurrentUserId(): Promise<string | null> {
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  return user?.id ?? null;
+}
+
 export async function getProjects(): Promise<Project[]> {
+  const userId = await getCurrentUserId();
+
+  /* Signed out: return an empty list instead of erroring. */
+  if (!userId) {
+    return [];
+  }
+
   const {
     data,
     error,
   } = await supabase
     .from("projects")
     .select("*")
+    /* Explicit per-user scoping (defense in depth on top of RLS). */
+    .eq("created_by", userId)
     .order("created_at", {
       ascending: false,
     });
@@ -86,6 +103,12 @@ export async function updateProject(
   id: string,
   updates: Partial<CreateProjectInput>
 ): Promise<Project> {
+  const userId = await getCurrentUserId();
+
+  if (!userId) {
+    throw new Error("You must be logged in to update a project.");
+  }
+
   const {
     data,
     error,
@@ -96,6 +119,8 @@ export async function updateProject(
       updated_at: new Date().toISOString(),
     })
     .eq("id", id)
+    /* Explicit per-user scoping (defense in depth on top of RLS). */
+    .eq("created_by", userId)
     .select()
     .single();
 
@@ -109,12 +134,20 @@ export async function updateProject(
 export async function deleteProject(
   id: string
 ): Promise<void> {
+  const userId = await getCurrentUserId();
+
+  if (!userId) {
+    throw new Error("You must be logged in to delete a project.");
+  }
+
   const {
     error,
   } = await supabase
     .from("projects")
     .delete()
-    .eq("id", id);
+    .eq("id", id)
+    /* Explicit per-user scoping (defense in depth on top of RLS). */
+    .eq("created_by", userId);
 
   if (error) {
     throw error;

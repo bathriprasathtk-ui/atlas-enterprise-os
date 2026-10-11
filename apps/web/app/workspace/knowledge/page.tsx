@@ -53,7 +53,7 @@ export default function KnowledgePage() {
 
       <CategoryFilter />
 
-      <UploadZone />
+      <UploadZone onUploaded={loadDocuments} />
 
       <AIKnowledgeCard />
 

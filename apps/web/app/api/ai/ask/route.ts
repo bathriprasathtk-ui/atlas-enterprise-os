@@ -134,6 +134,8 @@ export async function POST(request: Request) {
       .select(
         "id, title, file_name, mime_type, created_at"
       )
+      /* Only the current user's documents (RLS + explicit scope). */
+      .eq("uploaded_by", user.id)
       .order("created_at", {
         ascending: false,
       });
@@ -155,15 +157,6 @@ export async function POST(request: Request) {
       );
     }
 
-    console.log(
-      "Atlas AI user:",
-      user.id
-    );
-
-    console.log(
-      "Atlas AI documents:",
-      documents?.length ?? 0
-    );
 
     /*
      * =========================================================
@@ -205,35 +198,39 @@ export async function POST(request: Request) {
          * Generate Supabase Storage URL.
          */
 
-        const { data: publicUrlData } =
-          supabase.storage
-            .from("documents")
-            .getPublicUrl(
-              document.file_name
-            );
+        const {
+          data: signedData,
+          error: signError,
+        } = await supabase.storage
+          .from("documents")
+          .createSignedUrl(
+            document.file_name,
+            300
+          );
 
-        const publicUrl =
-          publicUrlData?.publicUrl;
+        const signedUrl =
+          signedData?.signedUrl;
 
-        if (!publicUrl) {
+        if (signError || !signedUrl) {
           console.warn(
-            "Could not generate URL for:",
-            document.file_name
+            "Could not sign URL for document:",
+            document.id
           );
 
           continue;
         }
 
         /*
-         * Download PDF.
+         * Download PDF through the signed URL
+         * (the bucket is private).
          */
 
         const fileResponse =
-          await fetch(publicUrl);
+          await fetch(signedUrl);
 
         if (!fileResponse.ok) {
           console.warn(
-            `Could not download ${document.file_name}: ${fileResponse.status}`
+            `Could not download document ${document.id}: ${fileResponse.status}`
           );
 
           continue;
@@ -254,8 +251,8 @@ export async function POST(request: Request) {
 
         if (!text) {
           console.warn(
-            "No readable text found in:",
-            document.file_name
+            "No readable text found in document:",
+            document.id
           );
 
           continue;
@@ -283,7 +280,7 @@ ${limitedText}
         );
       } catch (error) {
         console.error(
-          `Failed to process ${document.file_name}:`,
+          `Failed to process document ${document.id}:`,
           error
         );
       }

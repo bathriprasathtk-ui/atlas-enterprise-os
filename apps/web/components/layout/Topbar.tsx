@@ -13,7 +13,11 @@ import {
   LogOut,
 } from "lucide-react";
 
-import { signOut } from "@/lib/auth";
+import {
+  getCurrentUser,
+  signOut,
+  type CurrentUser,
+} from "@/lib/auth";
 
 export default function Topbar() {
   const router = useRouter();
@@ -27,6 +31,10 @@ export default function Topbar() {
   const [profileOpen, setProfileOpen] = useState(false);
   const [notificationsOpen, setNotificationsOpen] = useState(false);
   const [loading, setLoading] = useState(false);
+
+  // Authenticated user identity
+  const [currentUser, setCurrentUser] =
+    useState<CurrentUser | null>(null);
 
   // Keyboard + outside click handling
   useEffect(() => {
@@ -88,6 +96,27 @@ export default function Topbar() {
         "keydown",
         handleKeyboard
       );
+    };
+  }, []);
+
+  // Load the signed-in user's identity
+  useEffect(() => {
+    let cancelled = false;
+
+    getCurrentUser()
+      .then((user) => {
+        if (!cancelled) {
+          setCurrentUser(user);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setCurrentUser(null);
+        }
+      });
+
+    return () => {
+      cancelled = true;
     };
   }, []);
 
@@ -353,18 +382,18 @@ export default function Topbar() {
 
             {/* Avatar */}
             <div className="flex h-9 w-9 items-center justify-center rounded-full bg-gradient-to-br from-cyan-400 to-blue-600 text-sm font-semibold text-[#06101b] shadow-[0_0_18px_rgba(34,211,238,0.1)]">
-              B
+              {currentUser?.initials ?? ""}
             </div>
 
             {/* User information */}
             <div className="hidden text-left md:block">
 
               <p className="max-w-[130px] truncate text-sm font-medium text-white">
-                Bathriprasath
+                {currentUser?.displayName ?? "\u2026"}
               </p>
 
               <p className="mt-0.5 text-[11px] text-slate-500">
-                Administrator
+                {currentUser?.email ?? ""}
               </p>
 
             </div>
@@ -395,17 +424,17 @@ export default function Topbar() {
                 <div className="flex items-center gap-3">
 
                   <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-cyan-400 to-blue-600 text-sm font-semibold text-[#06101b]">
-                    B
+                    {currentUser?.initials ?? ""}
                   </div>
 
                   <div className="min-w-0">
 
                     <p className="truncate text-sm font-medium text-white">
-                      Bathriprasath
+                      {currentUser?.displayName ?? "\u2026"}
                     </p>
 
                     <p className="truncate text-[11px] text-slate-500">
-                      Administrator
+                      {currentUser?.email ?? ""}
                     </p>
 
                   </div>

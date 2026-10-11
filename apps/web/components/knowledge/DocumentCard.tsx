@@ -13,7 +13,7 @@ import { useState } from "react";
 import {
   deleteDocument,
   downloadDocument,
-  getDocumentUrl,
+  getDocumentSignedUrl,
   type Document,
 } from "@/lib/documents";
 
@@ -29,6 +29,7 @@ export default function DocumentCard({
   const [deleting, setDeleting] = useState(false);
   const [downloading, setDownloading] = useState(false);
   const [viewing, setViewing] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
 
   /* =========================================================
      GET FILE PATH
@@ -46,15 +47,19 @@ export default function DocumentCard({
      VIEW DOCUMENT
   ========================================================= */
 
-  const handleView = () => {
+  const handleView = async () => {
     try {
+      setActionError(null);
       setViewing(true);
 
       const filePath = getFilePath();
 
-      const publicUrl = getDocumentUrl(filePath);
+      /*
+       * The storage bucket is private, so previewing
+       * requires a short-lived signed URL.
+       */
 
-      console.log("Opening document:", publicUrl);
+      const signedUrl = await getDocumentSignedUrl(filePath);
 
       /*
        * PDF / images / text files can open directly.
@@ -81,15 +86,15 @@ export default function DocumentCard({
 
       if (isOfficeFile) {
         /*
-         * Microsoft Office Online Viewer
+         * Microsoft Office Online Viewer.
          *
-         * The Supabase bucket MUST be public
-         * for Office Online to access the file.
+         * The bucket is private, so the signed URL
+         * carries temporary access for the viewer.
          */
 
         const officeViewerUrl =
           `https://view.officeapps.live.com/op/view.aspx?src=${encodeURIComponent(
-            publicUrl
+            signedUrl
           )}`;
 
         window.open(
@@ -103,7 +108,7 @@ export default function DocumentCard({
          */
 
         window.open(
-          publicUrl,
+          signedUrl,
           "_blank",
           "noopener,noreferrer"
         );
@@ -114,8 +119,10 @@ export default function DocumentCard({
         error
       );
 
-      alert(
-        "Unable to open this document. Please check the file in Supabase Storage."
+      setActionError(
+        error instanceof Error
+          ? error.message
+          : "Unable to open this document."
       );
     } finally {
       setViewing(false);
@@ -128,14 +135,10 @@ export default function DocumentCard({
 
   const handleDownload = async () => {
     try {
+      setActionError(null);
       setDownloading(true);
 
       const filePath = getFilePath();
-
-      console.log(
-        "Downloading document:",
-        filePath
-      );
 
       const blob = await downloadDocument(filePath);
 
@@ -165,8 +168,10 @@ export default function DocumentCard({
         error
       );
 
-      alert(
-        "Unable to download this document."
+      setActionError(
+        error instanceof Error
+          ? error.message
+          : "Unable to download this document."
       );
     } finally {
       setDownloading(false);
@@ -178,6 +183,8 @@ export default function DocumentCard({
   ========================================================= */
 
   const handleDelete = async () => {
+    setActionError(null);
+
     const confirmed = window.confirm(
       `Are you sure you want to delete "${document.title}"?`
     );
@@ -211,8 +218,10 @@ export default function DocumentCard({
         error
       );
 
-      alert(
-        "Failed to delete the document."
+      setActionError(
+        error instanceof Error
+          ? error.message
+          : "Failed to delete the document."
       );
     } finally {
       setDeleting(false);
@@ -465,6 +474,15 @@ export default function DocumentCard({
       ===================================================== */}
 
       <div className="flex-1" />
+
+      {actionError && (
+        <p
+          role="alert"
+          className="mt-4 text-xs leading-5 text-red-300"
+        >
+          {actionError}
+        </p>
+      )}
 
       {/* =====================================================
           ACTION BUTTONS

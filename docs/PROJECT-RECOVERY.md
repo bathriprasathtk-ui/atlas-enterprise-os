@@ -14,6 +14,7 @@
 | Working branch | `freebuff/bc445a7e57f24e03cee2b69d` |
 | Base | `main` @ `5b1d249` "feat: sync Atlas Enterprise OS application" |
 | Checkpoint 1 | Commit directly after `5b1d249` on this branch — contains the full, verified **Trusted Data Foundation** milestone (previously uncommitted) |
+| Checkpoint 2 | Commit after checkpoint 1 — contains the full, verified **Semantic Knowledge Retrieval (RAG)** milestone + Docker/CI |
 | Node / npm | v24.21.0 / 11.19.0 |
 | App root | `apps/web/` (Next.js 16.2.11, App Router, React 19, TS strict, Tailwind v4) |
 
@@ -69,14 +70,61 @@ Makes the real auth → documents → storage → AI flow secure:
   — session-only, not committed.)
 - No secrets anywhere in diffs; no `.env.local`; no tracked `.env` files.
 
+### B. Semantic Knowledge Retrieval — Milestone 2 — VERIFIED (static + mocked)
+
+Real pgvector RAG over the private document store:
+
+1. **`supabase/migrations/0002_embeddings.sql`** (new): `document_chunks`
+   (UUID PK, `document_id` FK cascade, `uploaded_by` → `auth.users`,
+   `chunk_index`, `content`, `embedding vector(768)`, unique
+   (document, chunk_index), HNSW cosine index), RLS enabled with 4
+   owner-only policies (baseline drop of any pre-existing policies),
+   `match_document_chunks(query_embedding, match_count, min_similarity)`
+   written in `language sql` so the body is **inlined** into the caller's
+   query — RLS applies, plus an explicit `uploaded_by = auth.uid()` filter;
+   `execute` granted to `authenticated` only, revoked from `anon`/`public`.
+   Requires the `pgvector` extension (enable in Supabase → Extensions).
+   Idempotent. **UNAPPLIED to any hosted database.**
+2. **`lib/chunking.ts`** (new): paragraph-packed, sentence-aware,
+   word-boundary chunking — 1,600-char target, 200-char overlap trimmed to
+   the room available so no chunk ever exceeds the bound. 6 unit tests.
+3. **`lib/embeddings.ts`** (new): `gemini-embedding-2` via plain
+   `batchEmbedContents` fetch, `outputDimensionality: 768` (matches
+   `vector(768)`), 20-per-batch, API key server-side only,
+   `EmbeddingError` with HTTP status, strict shape checks. 9 unit tests
+   (mocked fetch — no network).
+4. **`lib/rag.ts`** (new): `findRelevantChunks()` (embed query → RPC
+   `match_document_chunks`) + `countUserChunks()`.
+5. **`lib/routeAuth.ts`** (new): shared route auth helper
+   (Bearer token → Supabase session user).
+6. **`app/api/documents/ingest/route.ts`** (new): auth → ownership check →
+   download PDF via **signed URL** → `lib/pdf.ts` text extraction → chunk →
+   embed → replace `document_chunks` rows atomically. Auto-triggered after
+   every upload (UploadZone) and manually via the **Re-index** button.
+7. **`app/api/ai/ask/route.ts`** (reworked): top-k chunk retrieval with
+   similarity floor; whole-PDF concatenation only as legacy fallback when
+   nothing is indexed. Same Gemini model/params, no PII logging.
+8. **`app/api/knowledge/search/route.ts`** (new) + Knowledge Hub search UI:
+   debounced semantic search (own documents only) with silent fallback to
+   the classic title filter when the embedding service is down.
+9. **DocumentCard**: "AI Indexed" badge now reflects **real** index state
+   (`document_chunks` count, RLS-scoped) instead of being hardcoded; new
+   Re-index action with inline errors/status (no `alert()`/`reload()`).
+10. **Docker + CI**: `apps/web/Dockerfile` (multi-stage, node:20-alpine,
+    standalone output — `next.config.ts` now sets `output: "standalone"`),
+    `apps/web/.dockerignore`, `.github/workflows/ci.yml` (blocking
+    typecheck + 15 unit tests + production build; lint non-blocking until
+    pre-existing debt is cleared; docker-build job validates the image on
+    GitHub's runner since the sandbox has no usable Docker daemon).
+11. **Unit-test infra**: `npm test` → `node --test` on
+    `lib/__tests__/*.test.ts` (15/15 pass; no new test framework added).
+
 ---
 
 ## 3. Current task
 
-Continuing the product build-out per the project-continuation brief.
-Order of work (see §5): semantic retrieval (RAG) milestone first — it was
-audited, designed and given a GO, and it builds directly on the new storage
-paths and RLS policies.
+Milestone 2 (Semantic Knowledge Retrieval) is COMPLETE and committed as
+checkpoint 2, pending user review. Next milestone is user-selected (§5).
 
 ---
 
@@ -85,8 +133,8 @@ paths and RLS policies.
 | Blocker | Impact | Workaround |
 |---|---|---|
 | **No Supabase project/credentials** in sandbox | Cannot live-test auth, RLS, Storage API, signed URLs | Verified statically + on local Postgres with mocked Supabase schemas. User must run `supabase db push` + two-account browser test (see §9) |
-| **No GEMINI_API_KEY** | Cannot exercise live Gemini chat/embeddings | Route code verified statically; tests mock `fetch` |
-| **No Docker in sandbox** | Docker image cannot be built/tested here | Dockerfile/CI written to spec, marked unverified |
+| **No GEMINI_API_KEY** | Cannot exercise live Gemini chat/embeddings | Route code verified statically; 9 unit tests mock `fetch` |
+| **No Docker in sandbox** | Docker image cannot be built/tested here | Dockerfile written to spec; `docker` CI job will build it on GitHub — locally unverified |
 | **Pre-existing lint debt** | `npm run lint` exits 1 (11 problems) | Pre-existing in untouched files; NOT suppressed. Fix in cleanup milestone |
 | **42 zero-byte placeholder files** | Dead weight; some represent unbuilt features | Analysis in §6; removal deferred to an approved cleanup milestone |
 | **Stray root `package.json` + `services/*.ts` (empty)** | Confusing; root lockfile broken | Deferred (architecture cleanup) |
@@ -95,25 +143,17 @@ paths and RLS policies.
 
 ## 5. Outstanding tasks (priority order)
 
-1. **Milestone 2 — Semantic Knowledge Retrieval (RAG)** *(in progress)*
-   - `supabase/migrations/0002_embeddings.sql`: pgvector extension,
-     `document_chunks` table (content, embedding vector(768), owner via
-     document join, RLS), similarity index
-   - `lib/chunking.ts`: PDF text → overlapping chunks (~1.5k chars)
-   - `lib/embeddings.ts`: Gemini `gemini-embedding-2` via
-     `batchEmbedContents`, `outputDimensionality: 768`
-   - Ingestion path on upload (+ re-ingest for existing docs)
-   - `ask/route.ts`: retrieve top-k chunks by cosine similarity instead of
-     concatenating whole PDFs
-   - Semantic search API + wiring into Knowledge search UI
+1. **Live verification on real Supabase (§9)** — apply `0001`+`0002`,
+   enable `pgvector`, run the two-account test, then an end-to-end
+   upload → Re-index → semantic search → AI question pass.
 2. Real dashboard data (documents/projects counts from DB instead of mock)
 3. AI chat page wired to the ask route (check current state first)
-4. Docker + GitHub Actions CI (typecheck+lint+build on PR)
-5. Minimal test setup (vitest for lib logic: chunking, validation, path
-   security) — no framework added without need
-6. Cleanup milestone (user-approved): remove unused zero-byte files, stray
-   root package.json/services dir, unify workspace shells
-7. Live verification on real Supabase (§9)
+4. Knowledge graph / related-document edges (needs user-approved design)
+5. Cleanup milestone (user-approved): remove unused zero-byte files, stray
+   root package.json/services dir, unify workspace shells, clear the 11
+   pre-existing lint findings so CI lint can become blocking
+6. Extend `node --test` coverage (path security, validation) as new lib
+   logic lands — vitest only if the suite outgrows the runner
 
 ---
 
@@ -153,13 +193,14 @@ RLS harness (session-only): `/tmp/rlstest/rls-test.js` with
 
 ## 8. Exact next steps (for the next session)
 
-1. `git log` to confirm checkpoint 1 is HEAD; read this file.
-2. Continue Milestone 2 (§5.1): migration → chunking → embeddings →
-   ingestion → retrieval → search API → verify (typecheck/build/lint;
-   mock-fetch tests for Gemini; SQL tests on embedded PG — pgvector
-   extension availability in sandbox TBD, else document as unverified).
-3. Update §2/§3/§5 of this file as you go.
-4. Do not touch: PRD/SRS/architecture docs (unless fixing factual drift),
+1. `git log` to confirm checkpoint 2 is HEAD; read this file.
+2. Ask the user to pick the next milestone (candidates in §5). Push +
+   open a PR only with explicit approval — CI (§2.B.10) will then
+   validate typecheck/tests/build and the Dockerfile on GitHub.
+3. When the user has a real Supabase project: follow §9 (migrations,
+   pgvector extension, two-account test, live Gemini pass).
+4. Update §2/§3/§5 of this file as you go.
+5. Do not touch: PRD/SRS/architecture docs (unless fixing factual drift),
    placeholder files (until approved), unrelated mock modules (tasks, team,
    analytics, workflows, calendar, integrations).
 
@@ -178,4 +219,4 @@ RLS harness (session-only): `/tmp/rlstest/rls-test.js` with
 
 ---
 
-*Last updated: session start of recovery — checkpoint 1.*
+*Last updated: milestone 2 complete — checkpoint 2.*

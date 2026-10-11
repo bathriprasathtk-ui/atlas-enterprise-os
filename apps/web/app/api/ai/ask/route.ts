@@ -3,8 +3,122 @@ import { createServerClient } from "@supabase/ssr";
 import { cookies } from "next/headers";
 
 import { extractPdfText } from "@/lib/pdf";
+import {
+  countUserChunks,
+  findRelevantChunks,
+} from "@/lib/rag";
 
 export const runtime = "nodejs";
+
+const GEMINI_MODEL = "gemini-3.6-flash";
+
+/** Characters of full-document text per PDF in legacy mode. */
+const LEGACY_MAX_CHARS_PER_DOC = 12000;
+
+class GeminiApiError extends Error {
+  readonly status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "GeminiApiError";
+    this.status = status;
+  }
+}
+
+function buildPrompt(
+  question: string,
+  context: string
+): string {
+  return `
+You are Atlas AI, the intelligent knowledge assistant
+inside Atlas Enterprise OS.
+
+Answer the user's question using the uploaded document
+content provided below.
+
+IMPORTANT RULES:
+
+1. Use the uploaded documents as the primary source.
+2. Do not invent information that is not supported by
+   the documents.
+3. If the answer cannot be found in the documents,
+   clearly say that the information was not found.
+4. You may summarize and explain information from the
+   documents.
+5. Mention the relevant document name when useful.
+6. Give a clear and useful answer.
+7. Do not claim to have read documents that are not
+   included below.
+
+USER QUESTION:
+${question}
+
+UPLOADED DOCUMENTS:
+${context}
+  `.trim();
+}
+
+async function callGemini(
+  apiKey: string,
+  prompt: string
+): Promise<string> {
+  const response = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`,
+    {
+      method: "POST",
+
+      headers: {
+        "Content-Type": "application/json",
+        "x-goog-api-key": apiKey,
+      },
+
+      body: JSON.stringify({
+        contents: [
+          {
+            role: "user",
+
+            parts: [
+              {
+                text: prompt,
+              },
+            ],
+          },
+        ],
+
+        generationConfig: {
+          temperature: 0.2,
+          maxOutputTokens: 1200,
+        },
+      }),
+    }
+  );
+
+  const data = await response.json();
+
+  if (!response.ok) {
+    console.error("Gemini API error:", data);
+
+    throw new GeminiApiError(
+      data?.error?.message || "Gemini API request failed.",
+      response.status
+    );
+  }
+
+  const answer =
+    data?.candidates?.[0]?.content?.parts
+      ?.map((part: { text?: string }) => part.text || "")
+      .join("")
+      .trim();
+
+  if (!answer) {
+    throw new GeminiApiError(
+      "Gemini returned an empty response.",
+      500
+    );
+  }
+
+  return answer;
+}
 
 export async function POST(request: Request) {
   try {
@@ -28,23 +142,15 @@ export async function POST(request: Request) {
           setAll(cookiesToSet) {
             try {
               cookiesToSet.forEach(
-                ({
-                  name,
-                  value,
-                  options,
-                }) => {
-                  cookieStore.set(
-                    name,
-                    value,
-                    options
-                  );
+                ({ name, value, options }) => {
+                  cookieStore.set(name, value, options);
                 }
               );
             } catch {
               /*
                * Server Components may not always allow
-               * cookie mutation. Reading the session is
-               * still sufficient for this route.
+               * cookie mutation. Reading the session
+               * is still sufficient for this route.
                */
             }
           },
@@ -66,8 +172,7 @@ export async function POST(request: Request) {
     if (userError || !user) {
       return NextResponse.json(
         {
-          error:
-            "You must be logged in to use Atlas AI.",
+          error: "You must be logged in to use Atlas AI.",
         },
         {
           status: 401,
@@ -105,14 +210,12 @@ export async function POST(request: Request) {
      * =========================================================
      */
 
-    const apiKey =
-      process.env.GEMINI_API_KEY;
+    const apiKey = process.env.GEMINI_API_KEY;
 
     if (!apiKey) {
       return NextResponse.json(
         {
-          error:
-            "GEMINI_API_KEY is not configured.",
+          error: "GEMINI_API_KEY is not configured.",
         },
         {
           status: 500,
@@ -122,7 +225,7 @@ export async function POST(request: Request) {
 
     /*
      * =========================================================
-     * GET USER DOCUMENTS
+     * GET USER DOCUMENTS (RLS + explicit scope)
      * =========================================================
      */
 
@@ -148,15 +251,13 @@ export async function POST(request: Request) {
 
       return NextResponse.json(
         {
-          error:
-            "Atlas could not access the document library.",
+          error: "Atlas could not access the document library.",
         },
         {
           status: 500,
         }
       );
     }
-
 
     /*
      * =========================================================
@@ -174,176 +275,169 @@ export async function POST(request: Request) {
 
     /*
      * =========================================================
-     * EXTRACT PDF TEXT
+     * SEMANTIC RETRIEVAL (Organizational Memory)
+     *
+     * When the user's documents are indexed (pgvector), pull
+     * only the most relevant chunks instead of feeding whole
+     * PDFs to the model.
      * =========================================================
      */
 
-    const documentContext: string[] = [];
-    const sources: string[] = [];
+    let context: string | null = null;
+    let sources: string[] = [];
 
-    for (const document of documents) {
-      const isPdf =
-        document.mime_type ===
-          "application/pdf" ||
-        document.file_name
-          ?.toLowerCase()
-          .endsWith(".pdf");
+    try {
+      const chunkCount = await countUserChunks(supabase);
 
-      if (!isPdf) {
-        continue;
+      if (chunkCount > 0) {
+        const matches = await findRelevantChunks(
+          supabase,
+          question,
+          apiKey
+        );
+
+        if (matches.length > 0) {
+          context = matches
+            .map(
+              (match, index) =>
+                `DOCUMENT ${index + 1}: ${match.title}\n(relevance ${match.similarity.toFixed(2)})\n\n${match.content}`
+            )
+            .join(
+              "\n\n--------------------------------\n\n"
+            );
+
+          sources = [
+            ...new Set(matches.map((m) => m.title)),
+          ];
+        } else {
+          /*
+           * Index exists but nothing cleared the similarity
+           * floor - answer honestly instead of guessing.
+           */
+          return NextResponse.json({
+            answer:
+              "I searched your indexed documents but couldn't find content relevant to that question. Try rephrasing it, or upload documents covering this topic.",
+            sources: [],
+          });
+        }
       }
+    } catch (error) {
+      /*
+       * Embedding/API hiccup: fall back to the legacy
+       * full-document mode so the assistant keeps working.
+       */
+      console.warn(
+        "Semantic retrieval unavailable; using full-document fallback.",
+        error
+      );
+    }
 
-      try {
-        /*
-         * Generate Supabase Storage URL.
-         */
+    /*
+     * =========================================================
+     * LEGACY FULL-DOCUMENT MODE (pre-indexing fallback)
+     * =========================================================
+     */
 
-        const {
-          data: signedData,
-          error: signError,
-        } = await supabase.storage
-          .from("documents")
-          .createSignedUrl(
-            document.file_name,
-            300
-          );
+    if (context === null) {
+      const documentContext: string[] = [];
+      sources = [];
 
-        const signedUrl =
-          signedData?.signedUrl;
+      for (const document of documents) {
+        const isPdf =
+          document.mime_type === "application/pdf" ||
+          document.file_name
+            ?.toLowerCase()
+            .endsWith(".pdf");
 
-        if (signError || !signedUrl) {
-          console.warn(
-            "Could not sign URL for document:",
-            document.id
-          );
-
+        if (!isPdf) {
           continue;
         }
 
-        /*
-         * Download PDF through the signed URL
-         * (the bucket is private).
-         */
+        try {
+          /*
+           * Generate a short-lived signed URL (the bucket is
+           * private).
+           */
 
-        const fileResponse =
-          await fetch(signedUrl);
+          const {
+            data: signedData,
+            error: signError,
+          } = await supabase.storage
+            .from("documents")
+            .createSignedUrl(document.file_name, 300);
 
-        if (!fileResponse.ok) {
-          console.warn(
-            `Could not download document ${document.id}: ${fileResponse.status}`
+          const signedUrl = signedData?.signedUrl;
+
+          if (signError || !signedUrl) {
+            console.warn(
+              "Could not sign URL for document:",
+              document.id
+            );
+
+            continue;
+          }
+
+          const fileResponse = await fetch(signedUrl);
+
+          if (!fileResponse.ok) {
+            console.warn(
+              `Could not download document ${document.id}: ${fileResponse.status}`
+            );
+
+            continue;
+          }
+
+          const arrayBuffer =
+            await fileResponse.arrayBuffer();
+
+          const buffer = Buffer.from(arrayBuffer);
+
+          const text = await extractPdfText(buffer);
+
+          if (!text) {
+            console.warn(
+              "No readable text found in document:",
+              document.id
+            );
+
+            continue;
+          }
+
+          const limitedText = text.slice(
+            0,
+            LEGACY_MAX_CHARS_PER_DOC
           );
 
-          continue;
-        }
-
-        const arrayBuffer =
-          await fileResponse.arrayBuffer();
-
-        const buffer =
-          Buffer.from(arrayBuffer);
-
-        /*
-         * Extract PDF text.
-         */
-
-        const text =
-          await extractPdfText(buffer);
-
-        if (!text) {
-          console.warn(
-            "No readable text found in document:",
-            document.id
-          );
-
-          continue;
-        }
-
-        /*
-         * Limit document size for now.
-         */
-
-        const limitedText =
-          text.slice(0, 12000);
-
-        documentContext.push(
-          `
+          documentContext.push(
+            `
 DOCUMENT: ${document.title}
-FILE: ${document.file_name}
 
 CONTENT:
 ${limitedText}
           `.trim()
-        );
+          );
 
-        sources.push(
-          document.title
-        );
-      } catch (error) {
-        console.error(
-          `Failed to process document ${document.id}:`,
-          error
-        );
+          sources.push(document.title);
+        } catch (error) {
+          console.error(
+            `Failed to process document ${document.id}:`,
+            error
+          );
+        }
       }
-    }
 
-    /*
-     * =========================================================
-     * NO READABLE PDFS
-     * =========================================================
-     */
+      if (documentContext.length === 0) {
+        return NextResponse.json({
+          answer:
+            "I found your documents, but I couldn't extract readable text from the uploaded PDF files.",
+          sources: [],
+        });
+      }
 
-    if (documentContext.length === 0) {
-      return NextResponse.json({
-        answer:
-          "I found your documents, but I couldn't extract readable text from the uploaded PDF files.",
-        sources: [],
-      });
-    }
-
-    /*
-     * =========================================================
-     * BUILD AI CONTEXT
-     * =========================================================
-     */
-
-    const context =
-      documentContext.join(
+      context = documentContext.join(
         "\n\n--------------------------------\n\n"
       );
-
-    /*
-     * =========================================================
-     * GEMINI PROMPT
-     * =========================================================
-     */
-
-    const prompt = `
-You are Atlas AI, the intelligent knowledge assistant
-inside Atlas Enterprise OS.
-
-Answer the user's question using the uploaded document
-content provided below.
-
-IMPORTANT RULES:
-
-1. Use the uploaded documents as the primary source.
-2. Do not invent information that is not supported by
-   the documents.
-3. If the answer cannot be found in the documents,
-   clearly say that the information was not found.
-4. You may summarize and explain information from the
-   documents.
-5. Mention the relevant document name when useful.
-6. Give a clear and useful answer.
-7. Do not claim to have read documents that are not
-   included below.
-
-USER QUESTION:
-${question}
-
-UPLOADED DOCUMENTS:
-${context}
-    `.trim();
+    }
 
     /*
      * =========================================================
@@ -351,108 +445,28 @@ ${context}
      * =========================================================
      */
 
-    const response =
-      await fetch(
-        "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent",
-        {
-          method: "POST",
-
-          headers: {
-            "Content-Type":
-              "application/json",
-            "x-goog-api-key": apiKey,
-          },
-
-          body: JSON.stringify({
-            contents: [
-              {
-                role: "user",
-
-                parts: [
-                  {
-                    text: prompt,
-                  },
-                ],
-              },
-            ],
-
-            generationConfig: {
-              temperature: 0.2,
-              maxOutputTokens: 1200,
-            },
-          }),
-        }
-      );
-
-    const data =
-      await response.json();
-
-    /*
-     * =========================================================
-     * GEMINI ERROR
-     * =========================================================
-     */
-
-    if (!response.ok) {
-      console.error(
-        "Gemini API error:",
-        data
-      );
-
-      return NextResponse.json(
-        {
-          error:
-            data?.error?.message ||
-            "Gemini API request failed.",
-        },
-        {
-          status: response.status,
-        }
-      );
-    }
-
-    /*
-     * =========================================================
-     * GET ANSWER
-     * =========================================================
-     */
-
-    const answer =
-      data?.candidates?.[0]?.content?.parts
-        ?.map(
-          (part: { text?: string }) =>
-            part.text || ""
-        )
-        .join("")
-        .trim();
-
-    if (!answer) {
-      return NextResponse.json(
-        {
-          error:
-            "Gemini returned an empty response.",
-        },
-        {
-          status: 500,
-        }
-      );
-    }
-
-    /*
-     * =========================================================
-     * RETURN ANSWER
-     * =========================================================
-     */
+    const answer = await callGemini(
+      apiKey,
+      buildPrompt(question, context)
+    );
 
     return NextResponse.json({
       answer,
       sources,
     });
   } catch (error) {
-    console.error(
-      "Atlas AI error:",
-      error
-    );
+    if (error instanceof GeminiApiError) {
+      return NextResponse.json(
+        {
+          error: error.message,
+        },
+        {
+          status: error.status,
+        }
+      );
+    }
+
+    console.error("Atlas AI error:", error);
 
     return NextResponse.json(
       {

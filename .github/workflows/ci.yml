@@ -1,0 +1,72 @@
+# =========================================================
+# Atlas Enterprise OS — CI
+#
+# typecheck / test / build are blocking.
+# lint is currently NON-blocking: the repository carries 11
+# pre-existing lint findings in files outside the secure-data
+# milestones. It is still executed and reported on every run;
+# flip continue-on-error to false once the debt is cleared.
+#
+# The docker job validates apps/web/Dockerfile on GitHub's
+# runner (the local dev sandbox has no usable Docker daemon).
+# =========================================================
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  web:
+    name: typecheck, test, build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/web
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Lint (non-blocking until pre-existing debt is cleared)
+        run: npm run lint
+        continue-on-error: true
+
+      - name: Unit tests
+        run: npm test
+
+      - name: Production build
+        run: npm run build
+        env:
+          # Placeholders only — real values live in repo secrets.
+          NEXT_PUBLIC_SUPABASE_URL: https://placeholder.supabase.co
+          NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: placeholder-key
+          GEMINI_API_KEY: placeholder-key
+
+  docker:
+    name: docker build
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build web image
+        run: >
+          docker build ./apps/web
+          --build-arg NEXT_PUBLIC_SUPABASE_URL=https://placeholder.supabase.co
+          --build-arg NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=placeholder-key
+          --build-arg GEMINI_API_KEY=placeholder-key
+          --tag atlas-web:ci

@@ -5,10 +5,11 @@ import {
   Download,
   Eye,
   FileText,
+  RefreshCw,
   Trash2,
 } from "lucide-react";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import {
   deleteDocument,
@@ -16,6 +17,8 @@ import {
   getDocumentSignedUrl,
   type Document,
 } from "@/lib/documents";
+
+import { supabase } from "@/lib/supabaseClient";
 
 type DocumentCardProps = {
   document: Document;
@@ -41,6 +44,112 @@ export default function DocumentCard({
     }
 
     return document.file_name;
+  };
+
+  /* =========================================================
+     AI INDEX STATE (real — from document_chunks)
+  ========================================================= */
+
+  const isPdfDocument =
+    document.mime_type === "application/pdf";
+
+  const [indexed, setIndexed] =
+    useState<boolean | null>(null);
+  const [reprocessing, setReprocessing] =
+    useState(false);
+  const [indexedNote, setIndexedNote] =
+    useState<string | null>(null);
+
+  useEffect(() => {
+    if (!isPdfDocument) {
+      return;
+    }
+
+    let active = true;
+
+    const checkIndex = async () => {
+      const { count, error } = await supabase
+        .from("document_chunks")
+        .select("id", { head: true, count: "exact" })
+        .eq("document_id", document.id);
+
+      if (!active) {
+        return;
+      }
+
+      if (error) {
+        // Unknown beats a wrong claim.
+        setIndexed(null);
+        return;
+      }
+
+      setIndexed((count ?? 0) > 0);
+    };
+
+    void checkIndex();
+
+    return () => {
+      active = false;
+    };
+  }, [document.id, isPdfDocument]);
+
+  /* =========================================================
+     RE-INDEX (extract → chunk → embed)
+  ========================================================= */
+
+  const handleReprocess = async () => {
+    if (!isPdfDocument || reprocessing) {
+      return;
+    }
+
+    setReprocessing(true);
+    setActionError(null);
+    setIndexedNote(null);
+
+    try {
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+
+      if (!session) {
+        setActionError(
+          "Your session has expired. Please sign in again."
+        );
+        return;
+      }
+
+      const response = await fetch(
+        `/api/documents/ingest?documentId=${document.id}`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${session.access_token}`,
+          },
+        }
+      );
+
+      const payload = (await response.json().catch(
+        () => ({}) as { message?: string; error?: string }
+      )) as { message?: string; error?: string };
+
+      if (!response.ok) {
+        setActionError(
+          payload.error ?? "Could not re-index this document."
+        );
+        return;
+      }
+
+      setIndexed(true);
+      setIndexedNote(
+        payload.message ?? "Document indexed."
+      );
+    } catch {
+      setActionError(
+        "Network error while re-indexing. Please try again."
+      );
+    } finally {
+      setReprocessing(false);
+    }
   };
 
   /* =========================================================
@@ -445,28 +554,40 @@ export default function DocumentCard({
           {formattedDate}
         </div>
 
-        {/* AI INDEXED */}
+        {/* AI INDEXED — real state, RLS-scoped */}
 
-        <div
-          className="
-            flex
-            items-center
-            gap-2
-            text-xs
-            text-cyan-400
-          "
-        >
-          <span
-            className="
-              h-1.5
-              w-1.5
-              rounded-full
-              bg-cyan-400
-            "
-          />
+        {isPdfDocument && indexed !== null && (
+          <div
+            className={`
+              flex
+              items-center
+              gap-2
+              text-xs
+              ${
+                indexed
+                  ? "text-cyan-400"
+                  : "text-slate-500"
+              }
+            `}
+          >
+            <span
+              className={`
+                h-1.5
+                w-1.5
+                rounded-full
+                ${
+                  indexed
+                    ? "bg-cyan-400"
+                    : "bg-slate-600"
+                }
+              `}
+            />
 
-          AI Indexed
-        </div>
+            {indexed
+              ? "AI Indexed"
+              : "Not indexed"}
+          </div>
+        )}
       </div>
 
       {/* =====================================================
@@ -481,6 +602,15 @@ export default function DocumentCard({
           className="mt-4 text-xs leading-5 text-red-300"
         >
           {actionError}
+        </p>
+      )}
+
+      {indexedNote && (
+        <p
+          role="status"
+          className="mt-4 text-xs leading-5 text-emerald-300"
+        >
+          {indexedNote}
         </p>
       )}
 
@@ -584,6 +714,55 @@ export default function DocumentCard({
             }
           />
         </button>
+
+        {/* =================================================
+            RE-INDEX (PDF only)
+        ================================================= */}
+
+        {isPdfDocument && (
+          <button
+            type="button"
+            onClick={() => {
+              void handleReprocess();
+            }}
+            disabled={reprocessing}
+            title="Re-index for AI"
+            className="
+              relative
+              z-30
+              flex
+              h-11
+              w-11
+              shrink-0
+              cursor-pointer
+              items-center
+              justify-center
+              rounded-xl
+              border
+              border-white/[0.08]
+              bg-white/[0.035]
+              text-slate-400
+              transition-all
+              duration-200
+              hover:border-cyan-400/20
+              hover:bg-cyan-400/[0.06]
+              hover:text-cyan-400
+              active:scale-[0.95]
+              disabled:cursor-not-allowed
+              disabled:opacity-50
+            "
+          >
+            <RefreshCw
+              size={17}
+              strokeWidth={1.8}
+              className={
+                reprocessing
+                  ? "animate-spin"
+                  : ""
+              }
+            />
+          </button>
+        )}
 
         {/* =================================================
             DELETE

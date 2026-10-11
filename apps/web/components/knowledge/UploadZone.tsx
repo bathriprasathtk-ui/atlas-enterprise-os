@@ -20,10 +20,19 @@ export default function UploadZone({ onUploaded }: UploadZoneProps) {
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
+  const [note, setNote] = useState<string | null>(null);
+
+  function isPdf(file: File) {
+    return (
+      file.type === "application/pdf" ||
+      file.name.toLowerCase().endsWith(".pdf")
+    );
+  }
 
   async function handleFile(file: File) {
     setError(null);
     setSuccess(null);
+    setNote(null);
 
     /* ---------- VALIDATION ---------- */
 
@@ -55,16 +64,19 @@ export default function UploadZone({ onUploaded }: UploadZoneProps) {
 
       /* ---------- SAVE METADATA ---------- */
 
-      const { error: insertError } = await supabase
-        .from("documents")
-        .insert({
-          title: file.name,
-          file_name: fileName,
-          file_url: "",
-          file_size: file.size,
-          mime_type: file.type,
-          uploaded_by: user.id,
-        });
+      const { data: inserted, error: insertError } =
+        await supabase
+          .from("documents")
+          .insert({
+            title: file.name,
+            file_name: fileName,
+            file_url: "",
+            file_size: file.size,
+            mime_type: file.type,
+            uploaded_by: user.id,
+          })
+          .select("id")
+          .single();
 
       if (insertError) {
         console.error("Document insert error:", insertError);
@@ -86,6 +98,41 @@ export default function UploadZone({ onUploaded }: UploadZoneProps) {
 
       /* Refresh the document list through the existing page state. */
       onUploaded?.();
+
+      /* ---------- AI INDEXING (PDFs only, non-fatal) ---------- */
+
+      const documentId = inserted?.id as string | undefined;
+
+      if (documentId && isPdf(file)) {
+        try {
+          const ingestResponse = await fetch(
+            "/api/documents/ingest",
+            {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify({ documentId }),
+            }
+          );
+
+          if (!ingestResponse.ok) {
+            throw new Error(
+              `Indexing failed (${ingestResponse.status})`
+            );
+          }
+
+          setSuccess(
+            `"${file.name}" uploaded and indexed for AI search.`
+          );
+        } catch (indexError) {
+          console.error("AI indexing error:", indexError);
+
+          setNote(
+            "The file was saved, but AI indexing failed. Use the document's Reprocess action to retry."
+          );
+        }
+      }
     } catch (err) {
       console.error("Upload error:", err);
 
@@ -167,6 +214,19 @@ export default function UploadZone({ onUploaded }: UploadZoneProps) {
             className="mt-0.5 shrink-0"
           />
           {success}
+        </p>
+      )}
+
+      {note && (
+        <p
+          role="status"
+          className="mx-auto mt-3 flex max-w-md items-start gap-2 text-left text-sm leading-5 text-amber-300"
+        >
+          <AlertCircle
+            size={16}
+            className="mt-0.5 shrink-0"
+          />
+          {note}
         </p>
       )}
 

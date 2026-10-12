@@ -138,22 +138,80 @@ user-selected (§5); status of every PRD/SRS requirement is tracked in
 
 ---
 
-## 5. Outstanding tasks (priority order)
+## 5. Actionable completion checklist (living document)
 
-1. **Live verification on real Supabase (§9)** — apply `0001→0004`, enable
-   `pgvector`, configure SMTP, two-account browser test, live Gemini pass.
-2. **Push + PR (user approval required)** — CI will then run
-   typecheck/tests/build + Docker build on GitHub.
-3. **Collaboration milestone (largest PRD gap, see REQUIREMENTS-STATUS §3.9.8)**
-   — shared workspaces, orgs/departments, roles, comments/chat. Requires a
-   product-approved multi-tenant design; current RLS is deliberately
-   owner-only.
-4. **Knowledge articles + versions** (REQ-KB-001/002, Database-Design §5.7).
-5. **MFA/SSO + email notifications** — need identity provider / email
-   service choices (external).
-6. **Cleanup milestone (user-approved)** — remove zero-byte files, stray
-   root `package.json`/`services/`, make CI lint blocking (now feasible).
-7. **Knowledge Graph** — v2.0 per PRD §12; do not fake in v1.
+Status markers: `[ ]` open · `[~]` in progress · `[x]` done+verified.
+Every item traces to `docs/REQUIREMENTS-STATUS.md`.
+
+### A. Organization, isolation, membership, roles (REQ-ORG-*, PRD 9.2/9.6/9.8, SRS §12)
+- [ ] A1 `0005_organizations.sql`: `organizations`, `org_members`
+      (roles owner/admin/member), `departments`, `org_invitations`;
+      helpers `current_org_id()/current_org_role()/is_org_admin()`;
+      `organization_id` columns on all resource tables + storage
+      policy update; membership+RBAC RLS replacing owner-only
+      policies; personal-org backfill for existing users; idempotent
+- [ ] A2 Harness tests: two organizations fully isolated; role rules
+      (member cannot manage members, admin can; non-member blocked);
+      invited user joins; backfill correctness
+- [ ] A3 `lib/orgs.ts` + org scoping in every data lib (explicit
+      `.eq("organization_id", …)` on top of RLS, codebase convention)
+- [ ] A4 No-org gate in workspace layout + `/onboarding` flow
+      (create organization | use invitation)
+- [ ] A5 Team page → real member management (invite by email, change
+      role, remove, leave) + departments (create, assign)
+- [ ] A6 Settings → organization profile (rename, admin only)
+
+### B. Knowledge articles + versioning (REQ-KB-001/002, PRD 9.3, DB §5.7)
+- [ ] B1 `0006_knowledge.sql`: `knowledge_articles` + `article_versions`
+      (org-scoped RLS, author + admin delete rules)
+- [ ] B2 `lib/knowledgeArticles.ts`: CRUD, version snapshot per save,
+      list/restore versions, validation
+- [ ] B3 Knowledge Hub tabs (Documents | Articles): editor, category,
+      tags, version history + restore UI
+- [ ] B4 Articles included in Knowledge Hub search
+- [ ] B5 Harness + unit tests (validation, versioning, RLS)
+
+### C. Email notifications (PRD 9.10)
+- [ ] C1 Choose provider via service research; document env var
+- [ ] C2 `lib/mail.ts` server module — real provider API when
+      configured, honest `not_configured` result otherwise (no fake sends)
+- [ ] C3 `profiles.email_notifications` preference + Settings toggle
+- [ ] C4 Wire: organization invitations (primary use) + workflow-run
+      failures
+- [ ] C5 Blocker documented precisely if no key available
+
+### D. MFA / SSO (REQ-AUTH-003, PRD 9.1)
+- [ ] D1 Research Supabase MFA API; Settings → two-factor section
+      (enroll/verify/unenroll TOTP) + login challenge flow
+- [ ] D2 Google SSO button gated behind documented env flag
+      (`signInWithOAuth`), config instructions + blocker recorded
+- [ ] D3 Unit-test what is testable without a live IdP
+
+### E. Verification infrastructure (adds integration/E2E to unit tests)
+- [ ] E1 Real pgvector: build PG18+pgvector locally, apply `0002`,
+      verify `match_document_chunks` similarity for real
+- [ ] E2 Committed `npm run test:db` — migrations + full RLS matrix
+      (embedded PG fallback; external PG incl. vector); CI job
+- [ ] E3 Committed `npm run test:e2e` — production server over HTTP:
+      health, login HTML, middleware redirects, API 401s
+
+### F. Full behavior + authorization audit
+- [ ] F1 Page/route sweep: every button, form, link, menu does
+      something real or is honestly labelled — fix findings
+- [ ] F2 API authorization matrix: 401s, org scoping, no PII leaks
+
+### G. Quality review
+- [ ] G1 Security/privacy/logging: no secrets/PII in logs or client
+- [ ] G2 Error handling + accessibility (labels, aria, focus)
+- [ ] G3 Responsiveness spot-checks + performance/index review
+
+### H. Deployability
+- [ ] H1 CI: test:db + e2e jobs; lint job blocking (lint now 0)
+- [ ] H2 Docker/health/rollback docs validated as far as env allows
+
+### I. Close-out
+- [ ] I1 Requirements matrix + docs reflect final state
+- [ ] I2 Focused local commits; final report
 
 ---
 

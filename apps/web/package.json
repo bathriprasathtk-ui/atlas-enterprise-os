@@ -8,7 +8,8 @@
     "start": "next start",
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
-    "test": "node --experimental-strip-types --test lib/__tests__/*.test.ts"
+    "test": "node --experimental-strip-types --test lib/__tests__/*.test.ts",
+    "test:db": "node scripts/db-tests.mjs"
   },
   "dependencies": {
     "@supabase/ssr": "^0.12.4",
@@ -31,6 +32,8 @@
     "eslint": "^9",
     "eslint-config-next": "16.2.11",
     "tailwindcss": "^4",
-    "typescript": "^5"
+    "typescript": "^5",
+    "embedded-postgres": "^18.4.0-beta.15",
+    "pg": "^8.16.3"
   }
 }

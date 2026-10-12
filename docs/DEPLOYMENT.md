@@ -25,6 +25,7 @@ standalone build).
 | `NEXT_PUBLIC_SUPABASE_URL` | **Build + runtime, public** | Supabase project URL. Inlined into the client bundle at build time — must be present when `next build` / `docker build` runs |
 | `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` | **Build + runtime, public** | Supabase anon/publishable key (safe for browsers; RLS is the security boundary) |
 | `GEMINI_API_KEY` | **Runtime, secret** | Server-side only (AI routes). Never exposed to the browser. At build time it is only read if you pass it as a Docker build arg; runtime injection is sufficient for the app to work |
+| `KNOCK_API_KEY` | **Runtime, secret** | Optional. Invitation emails via [Knock](https://knock.app) (`lib/mail.ts`). Without it, `POST /api/org/invite-email` honestly returns `{"status":"not_configured"}` and the Team page says so — no email is ever faked |
 
 Notes:
 
@@ -33,6 +34,13 @@ Notes:
   explicit errors and `/api/health` reports `configured.supabase: false`.
 * Without `GEMINI_API_KEY`, AI routes return
   `503 {"error":"GEMINI_API_KEY is not configured."}` — they never fake a response.
+* Without `KNOCK_API_KEY`, invitation creation still works
+  end-to-end; only the email is skipped, with an explicit
+  "not configured" message in the UI. To enable email: create
+  a Knock account, connect your email provider in its
+  dashboard, define the `org_invitation` workflow (its email
+  channel resolves the recipient from the invited address),
+  then set `KNOCK_API_KEY`.
 * Never commit `.env.local`. Template: `apps/web/.env.example`.
 * On Vercel/other hosts, set all three in the project settings;
   for Docker pass `NEXT_PUBLIC_*` as `--build-arg`s (see header
@@ -59,9 +67,16 @@ Apply **in this order** — each file is idempotent (safe to re-run):
 | # | File | Contents | Verified |
 |---|---|---|---|
 | 1 | `0001_init.sql` | documents, projects, storage bucket + owner-only policies | Applied + RLS-tested on PostgreSQL 18 |
-| 2 | `0002_embeddings.sql` | `document_chunks` vector(768), HNSW index, `match_document_chunks()` | ⚠️ Needs pgvector — verify on target |
+| 2 | `0002_embeddings.sql` | `document_chunks` vector(768), HNSW index, `match_document_chunks()` | Applied + tested on PostgreSQL 18 with pgvector 0.8.6 (org-scoped in 0005) |
 | 3 | `0003_core.sql` | tasks, notifications, ai_conversations, audit_logs, workflows/runs, profiles + triggers | Applied + 31 RLS assertions on PostgreSQL 18 |
 | 4 | `0004_document_categories.sql` | documents.category | Applied + 13 assertions on PostgreSQL 18 |
+| 5 | `0005_organizations.sql` | organizations, org_members (owner/admin/member), departments, invitations + RPCs; org-scoped RLS on every workspace table; personal-org backfill | Applied + 58 RLS/RBAC assertions on PostgreSQL 18 |
+| 6 | `0006_membership_audit.sql` | membership audit trigger + notifications for role changes/removals | Applied + 10 assertions on PostgreSQL 18 |
+| 7 | `0007_knowledge_articles.sql` | knowledge_articles + immutable version history, trigger-enforced | Applied + 11 assertions on PostgreSQL 18 |
+
+Full suite: `npm run test:db` (from `apps/web/`) — **81/81 checks** against a
+real PostgreSQL 18 instance, including pgvector and a second idempotent pass
+of every migration.
 
 How to apply:
 
@@ -151,6 +166,17 @@ Code and schema are both recoverable:
    roll them back unless a migration itself is at fault:
    * `0004` only adds a nullable column: `ALTER TABLE documents DROP COLUMN IF EXISTS category;`
    * `0003` tables are unused by older app code: safe to leave in place (preferred).
+   * `0005`/`0006`/`0007` add the organization model, membership
+     auditing and knowledge articles. Rolling the **app** back to a
+     pre-0005 commit while 0005–0007 remain applied is safe: the old
+     app code is unaware of the new tables, and every 0005 policy is a
+     superset of the old owner-only rules for single-user data (the
+     backfill assigns existing rows to each user's personal
+     organization). Dropping the new tables is **not** recommended:
+     `0005` replaced the original policies, so removing it without
+     restoring the 0003 policies would leave the old app unable to
+     read its own rows. To fully revert a database, restore a
+     pre-0005 point-in-time backup instead.
 3. **Secrets**: rotate `GEMINI_API_KEY` / Supabase keys in the host's
    secret store; no key lives in the repository or the image.
 4. Verify after rollback: `/api/health`, sign-in, one document fetch.

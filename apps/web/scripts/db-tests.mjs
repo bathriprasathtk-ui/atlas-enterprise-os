@@ -32,6 +32,7 @@ const B = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
 const C = "cccccccc-cccc-cccc-cccc-cccccccccccc";
 const D = "dddddddd-dddd-dddd-dddd-dddddddddddd";
 const E = "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee";
+const F = "ffffffff-ffff-ffff-ffff-ffffffffffff";
 
 let pass = 0;
 let fail = 0;
@@ -228,20 +229,6 @@ async function detectVector(client) {
   }
 }
 
-async function applyMigrations(client) {
-  const files = readdirSync(MIG_DIR)
-    .filter((name) => /^\d+.*\.sql$/.test(name))
-    .sort()
-    .filter((name) => HAS_VECTOR || !name.startsWith("0002"));
-
-  for (const file of files) {
-    await client.query(readFileSync(join(MIG_DIR, file), "utf8"));
-    console.log(`applied ${file}`);
-  }
-
-  return files;
-}
-
 async function applyMigrationsAgain(client) {
   const files = readdirSync(MIG_DIR)
     .filter((name) => /^\d+.*\.sql$/.test(name))
@@ -275,9 +262,13 @@ async function asUser(client, id) {
 
 async function seedEra1(client, files) {
   /* apply 0001..0004 only, seed data under owner-only RLS,
-     then 0005 runs against real pre-existing rows */
+     then 0005 runs against real pre-existing rows, then 0006
+     (its trigger depends on org_members from 0005) */
   for (const file of files
-        .filter((f) => !f.startsWith("0005"))
+        .filter((f) =>
+          !f.startsWith("0005") &&
+          !f.startsWith("0006") &&
+          !f.startsWith("0007"))
         .filter((f) => HAS_VECTOR || !f.startsWith("0002"))) {
     await client.query(readFileSync(join(MIG_DIR, file), "utf8"));
     console.log(`applied ${file}`);
@@ -320,6 +311,16 @@ async function seedEra1(client, files) {
     readFileSync(join(MIG_DIR, "0005_organizations.sql"), "utf8")
   );
   console.log("applied 0005_organizations.sql");
+
+  await client.query(
+    readFileSync(join(MIG_DIR, "0006_membership_audit.sql"), "utf8")
+  );
+  console.log("applied 0006_membership_audit.sql");
+
+  await client.query(
+    readFileSync(join(MIG_DIR, "0007_knowledge_articles.sql"), "utf8")
+  );
+  console.log("applied 0007_knowledge_articles.sql");
 }
 
 async function testBackfill(client) {
@@ -372,7 +373,7 @@ async function testBackfill(client) {
   return { orgA, orgB };
 }
 
-async function testIsolation(client, orgs) {
+async function testIsolation(client) {
   await asUser(client, A);
   await client.query("set role authenticated");
 
@@ -704,7 +705,7 @@ async function testDepartmentsAndProfiles(client, orgs) {
   await asUser(client, null);
 }
 
-async function testStorageSharing(client, orgs) {
+async function testStorageSharing(client) {
   await asUser(client, A);
   await client.query("set role authenticated");
   await client.query(
@@ -824,7 +825,7 @@ async function testPersonalTables(client, orgs) {
   await asUser(client, null);
 }
 
-async function testVectorOrgScope(client, orgs) {
+async function testVectorOrgScope(client) {
   if (!HAS_VECTOR) {
     skipCheck("pgvector organization-scope tests", "extension unavailable");
     return;
@@ -881,6 +882,260 @@ async function testEscapeHatch(client) {
 
 /* ---------- orchestration ---------- */
 
+async function testMembershipAudit(client, orgs) {
+  /* 0006: join / role-change / removal are recorded by an
+     row trigger in the same transaction, whichever code path
+     performed them, and affected members are notified. */
+
+  /* F must be created after 0005 so the backfill does not
+     hand them a personal organization. */
+  await createUser(client, F, "f@atlas.test", "Fay Member");
+
+  /* --- join via invitation accept --- */
+  await asUser(client, A);
+  await client.query("set role authenticated");
+  await client.query(`select public.invite_member('f@atlas.test')`);
+  const inv = await client.query(
+    `select id from public.org_invitations where lower(email) = 'f@atlas.test'`);
+  check("audit: invitation for F exists", inv.rows.length === 1);
+  await client.query("reset role");
+
+  await asUser(client, F);
+  await client.query("set role authenticated");
+  await client.query(`select public.accept_invitation($1)`,
+    [inv.rows[0].id]);
+  await client.query("reset role");
+
+  let rows = await client.query(
+    `select user_id, entity_id, metadata from public.audit_logs
+     where action = 'org.member.joined' and entity_id = $1`, [F]);
+  check("audit: join records org.member.joined",
+    rows.rows.length === 1 &&
+    rows.rows[0].user_id === F &&
+    rows.rows[0].metadata?.role === "member",
+    JSON.stringify(rows.rows));
+
+  let notif = await client.query(
+    `select id from public.notifications where user_id = $1`, [F]);
+  check("audit: joining does not notify the joiner",
+    notif.rows.length === 0);
+
+  /* --- self-leave records the removal, no notification --- */
+  await asUser(client, F);
+  await client.query("set role authenticated");
+  await client.query(
+    `delete from public.org_members where user_id = $1 returning user_id`,
+    [F]);
+  await client.query("reset role");
+
+  rows = await client.query(
+    `select user_id, entity_id from public.audit_logs
+     where action = 'org.member.removed' and entity_id = $1`, [F]);
+  check("audit: self-leave records org.member.removed",
+    rows.rows.length === 1 && rows.rows[0].user_id === F);
+
+  notif = await client.query(
+    `select id from public.notifications where user_id = $1`, [F]);
+  check("audit: self-leave does not notify the leaver",
+    notif.rows.length === 0);
+
+  /* --- rejoin, then a role change by the owner --- */
+  await asUser(client, A);
+  await client.query("set role authenticated");
+  await client.query(`select public.invite_member('f@atlas.test')`);
+  const inv2 = await client.query(
+    `select id from public.org_invitations where lower(email) = 'f@atlas.test'`);
+  await client.query("reset role");
+
+  await asUser(client, F);
+  await client.query("set role authenticated");
+  await client.query(`select public.accept_invitation($1)`,
+    [inv2.rows[0].id]);
+  await client.query("reset role");
+
+  await asUser(client, A);
+  await client.query("set role authenticated");
+  await client.query(
+    `update public.org_members set role = 'admin'
+     where user_id = $1 and organization_id = $2`,
+    [F, orgs.orgA]);
+  await client.query("reset role");
+
+  rows = await client.query(
+    `select user_id, metadata from public.audit_logs
+     where action = 'org.member.role_changed' and entity_id = $1
+     order by created_at desc`, [F]);
+  check("audit: role change records from/to metadata",
+    rows.rows.length === 1 &&
+    rows.rows[0].user_id === A &&
+    rows.rows[0].metadata?.from === "member" &&
+    rows.rows[0].metadata?.to === "admin",
+    JSON.stringify(rows.rows));
+
+  notif = await client.query(
+    `select title from public.notifications where user_id = $1`,
+    [F]);
+  check("audit: role change notifies the affected member",
+    notif.rows.length === 1 &&
+    notif.rows[0].title === "Your role changed");
+
+  /* --- removal by the owner notifies the removed member --- */
+  await asUser(client, A);
+  await client.query("set role authenticated");
+  await client.query(
+    `delete from public.org_members where user_id = $1 returning user_id`,
+    [F]);
+  await client.query("reset role");
+
+  rows = await client.query(
+    `select user_id, entity_id from public.audit_logs
+     where action = 'org.member.removed' and entity_id = $1`, [F]);
+  check("audit: admin removal records the acting owner",
+    rows.rows.length === 2 && rows.rows.some((r) => r.user_id === A),
+    JSON.stringify(rows.rows));
+
+  notif = await client.query(
+    `select title from public.notifications where user_id = $1
+     order by created_at`, [F]);
+  check("audit: removal notifies the removed member",
+    notif.rows.length === 2 &&
+    notif.rows[1].title === "Removed from an organization",
+    JSON.stringify(notif.rows));
+
+  /* --- trigger never blocks the operation itself --- */
+  const member = await client.query(
+    `select user_id from public.org_members where user_id = $1`, [F]);
+  check("audit: F's membership row is gone after removal",
+    member.rows.length === 0);
+}
+
+async function testKnowledgeArticles(client, orgs) {
+  /* 0007: org-scoped articles, trigger-enforced immutable
+     version history, wiki-style edit rights. */
+
+  await asUser(client, A);
+  await client.query("set role authenticated");
+  const art = await client.query(
+    `insert into public.knowledge_articles
+       (organization_id, title, content, created_by)
+     values ($1, 'Onboarding', 'Welcome to the team.', $2)
+     returning id, current_version`,
+    [orgs.orgA, A]);
+  check("articles: create records version 1",
+    art.rows[0].current_version === 1);
+
+  let v = await client.query(
+    `select version_number, content, created_by
+     from public.knowledge_article_versions
+     where article_id = $1`, [art.rows[0].id]);
+  check("articles: version 1 row exists with the creator",
+    v.rows.length === 1 &&
+    v.rows[0].version_number === 1 &&
+    v.rows[0].created_by === A);
+
+  await client.query(
+    `update public.knowledge_articles
+     set content = 'Welcome aboard — updated.'
+     where id = $1`, [art.rows[0].id]);
+
+  const edited = await client.query(
+    `select current_version from public.knowledge_articles
+     where id = $1`, [art.rows[0].id]);
+  check("articles: editing bumps current_version",
+    edited.rows[0].current_version === 2);
+
+  v = await client.query(
+    `select version_number, created_by
+     from public.knowledge_article_versions
+     where article_id = $1 order by version_number`,
+    [art.rows[0].id]);
+  check("articles: edit appended an immutable version",
+    v.rows.length === 2 && v.rows[1].version_number === 2);
+
+  /* cross-organization isolation */
+  await asUser(client, B);
+  await client.query("set role authenticated");
+  let r = await client.query(
+    `select id from public.knowledge_articles where id = $1`,
+    [art.rows[0].id]);
+  check("articles: other organizations cannot see the article",
+    r.rows.length === 0);
+
+  r = await client.query(
+    `update public.knowledge_articles set title = 'Hacked'
+     where id = $1 returning id`, [art.rows[0].id]);
+  check("articles: other organizations cannot edit it",
+    r.rows.length === 0);
+
+  const bad = await expectError(client,
+    `insert into public.knowledge_articles
+       (organization_id, title, content, created_by)
+     values ($1, 'Spoof', '', $2)`,
+    [orgs.orgA, B]);
+  check("articles: spoofed organization insert is rejected",
+    Boolean(bad));
+
+  /* wiki model: any org member may read and edit */
+  await asUser(client, D);
+  await client.query("set role authenticated");
+  r = await client.query(
+    `select id from public.knowledge_articles where id = $1`,
+    [art.rows[0].id]);
+  check("articles: org members can read",
+    r.rows.length === 1);
+
+  await client.query(
+    `update public.knowledge_articles
+     set title = 'Onboarding handbook'
+     where id = $1`, [art.rows[0].id]);
+
+  v = await client.query(
+    `select version_number, created_by
+     from public.knowledge_article_versions
+     where article_id = $1 order by version_number desc limit 1`,
+    [art.rows[0].id]);
+  check("articles: member edit is versioned with their id",
+    v.rows[0].version_number === 3 && v.rows[0].created_by === D);
+
+  /* versions are immutable */
+  r = await client.query(
+    `update public.knowledge_article_versions set content = 'x'
+     where article_id = $1 returning id`, [art.rows[0].id]);
+  check("articles: history rows cannot be updated",
+    r.rows.length === 0);
+
+  r = await client.query(
+    `delete from public.knowledge_article_versions
+     where article_id = $1 returning id`, [art.rows[0].id]);
+  check("articles: history rows cannot be deleted",
+    r.rows.length === 0);
+
+  /* delete: creator or admin only */
+  r = await client.query(
+    `delete from public.knowledge_articles
+     where id = $1 returning id`, [art.rows[0].id]);
+  check("articles: non-creator member cannot delete",
+    r.rows.length === 0);
+
+  await client.query("reset role");
+
+  /* cascade: org deletion removes articles and versions */
+  await asUser(client, C);
+  await client.query("set role authenticated");
+  await client.query(
+    `insert into public.knowledge_articles
+       (organization_id, title, content, created_by)
+     values ($1, 'C article', 'body', $2)`,
+    [orgs.orgC, C]);
+  await client.query("reset role");
+
+  const orgCRows = await client.query(
+    `select id from public.knowledge_articles
+     where organization_id = $1`, [orgs.orgC]);
+  check("articles: org C has its article",
+    orgCRows.rows.length === 1);
+}
+
 async function main() {
   const server = await startServer();
   let client = null;
@@ -906,7 +1161,7 @@ async function main() {
     const orgs = await testBackfill(client);
 
     console.log("\n-- isolation --");
-    await testIsolation(client, orgs);
+    await testIsolation(client);
 
     console.log("\n-- onboarding RPCs --");
     const { orgC } = await testOnboarding(client);
@@ -925,16 +1180,22 @@ async function main() {
     await testDepartmentsAndProfiles(client, orgs);
 
     console.log("\n-- storage sharing --");
-    await testStorageSharing(client, orgs);
+    await testStorageSharing(client);
 
     console.log("\n-- personal tables --");
     await testPersonalTables(client, orgs);
 
     console.log("\n-- vector org scope --");
-    await testVectorOrgScope(client, orgs);
+    await testVectorOrgScope(client);
 
     console.log("\n-- escape hatch --");
     await testEscapeHatch(client);
+
+    console.log("\n-- membership audit triggers (0006) --");
+    await testMembershipAudit(client, orgs);
+
+    console.log("\n-- knowledge articles (0007) --");
+    await testKnowledgeArticles(client, orgs);
 
     console.log("\n-- idempotency --");
     await client.query("reset role");

@@ -1,9 +1,15 @@
 import { logAuditClient } from "./audit.ts";
 import { supabase } from "./supabaseClient.ts";
 import {
+  assertVisibleDocument,
   createSignedDocumentUrl,
   removeStoredDocument,
 } from "./storage.ts";
+import {
+  getCurrentOrg,
+  getCurrentOrgId,
+  requireOrgId,
+} from "./orgContext.ts";
 
 export type Document = {
   id: string;
@@ -42,33 +48,23 @@ async function getCurrentUserId(): Promise<string | null> {
   return user?.id ?? null;
 }
 
-/**
- * Explicit ownership guard used by every storage operation.
- * Storage paths are user-scoped: `{userId}/{timestamp}-{filename}`.
- */
-function assertOwnedPath(path: string, userId: string) {
-  if (!path || !path.startsWith(`${userId}/`)) {
-    throw new Error("You do not have access to this document.");
-  }
-}
-
 /* =========================================================
    GET DOCUMENTS
 ========================================================= */
 
 export async function getDocuments(): Promise<Document[]> {
-  const userId = await getCurrentUserId();
+  const orgId = await getCurrentOrgId();
 
-  /* Signed out: return an empty list instead of erroring. */
-  if (!userId) {
+  /* Signed out or no organization yet: empty list. */
+  if (!orgId) {
     return [];
   }
 
   const { data, error } = await supabase
     .from("documents")
     .select("*")
-    /* Explicit per-user scoping (defense in depth on top of RLS). */
-    .eq("uploaded_by", userId)
+    /* Explicit org scoping (defense in depth on top of RLS). */
+    .eq("organization_id", orgId)
     .order("created_at", {
       ascending: false,
     });
@@ -106,7 +102,7 @@ export async function downloadDocument(fileName: string) {
     throw new Error("File name is missing.");
   }
 
-  assertOwnedPath(fileName, userId);
+  await assertVisibleDocument(fileName);
 
   const { data, error } = await supabase.storage
     .from("documents")
@@ -142,7 +138,39 @@ export async function deleteDocument(
     throw new Error("File name is missing.");
   }
 
-  assertOwnedPath(fileName, userId);
+  const orgId = await requireOrgId();
+
+  await assertVisibleDocument(fileName);
+
+  /*
+   * Authorization pre-check against the real rules (uploader
+   * or administrator). The storage object must be removed
+   * while its document row still exists — storage delete RLS
+   * keys off that row — so the permission decision has to
+   * happen before any destructive step.
+   */
+  const { data: docRow, error: lookupError } = await supabase
+    .from("documents")
+    .select("uploaded_by")
+    .eq("id", id)
+    .maybeSingle();
+
+  if (lookupError) {
+    throw new Error(lookupError.message);
+  }
+
+  const snapshot = await getCurrentOrg();
+  const isAdmin =
+    snapshot?.role === "owner" || snapshot?.role === "admin";
+
+  if (
+    !docRow ||
+    (docRow.uploaded_by !== snapshot?.userId && !isAdmin)
+  ) {
+    throw new Error(
+      "Only the uploader or an organization administrator can delete this document."
+    );
+  }
 
   /* ---------- DELETE FROM STORAGE ---------- */
 
@@ -150,12 +178,13 @@ export async function deleteDocument(
 
   /* ---------- DELETE DATABASE RECORD ---------- */
 
-  const { error: dbError } = await supabase
+  const { data: deleted, error: dbError } = await supabase
     .from("documents")
     .delete()
     .eq("id", id)
-    /* Explicit per-user scoping (defense in depth on top of RLS). */
-    .eq("uploaded_by", userId);
+    /* Explicit org scoping (RLS enforces owner-or-admin). */
+    .eq("organization_id", orgId)
+    .select("id");
 
   if (dbError) {
     console.error(
@@ -164,6 +193,13 @@ export async function deleteDocument(
     );
 
     throw dbError;
+  }
+
+  /* Backstop: RLS agreed with the pre-check. */
+  if (!deleted || deleted.length === 0) {
+    throw new Error(
+      "Only the uploader or an organization administrator can delete this document."
+    );
   }
 
   await logAuditClient({

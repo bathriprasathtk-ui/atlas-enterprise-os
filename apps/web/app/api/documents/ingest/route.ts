@@ -9,10 +9,10 @@
      documents that have no indexed chunks yet (backfill
      for documents uploaded before semantic indexing).
 
-   Everything is scoped to the authenticated user:
-   document lookups filter uploaded_by, storage access uses
-   signed URLs for their own objects, chunk writes are
-   owner-checked (RLS + explicit uploaded_by).
+   Everything is scoped to the caller's organization:
+   document lookups filter organization_id, storage access
+   uses signed URLs the storage RLS policies allow, chunk
+   writes are org-checked (RLS + organization_id).
 ========================================================= */
 
 import { NextResponse } from "next/server";
@@ -64,6 +64,20 @@ export async function POST(request: Request) {
     );
   }
 
+  /* Caller's organization (RLS still enforces membership). */
+  const { data: orgIdData } = await supabase.rpc(
+    "current_org_id"
+  );
+
+  if (!orgIdData) {
+    return NextResponse.json(
+      { error: "Join an organization first." },
+      { status: 403 }
+    );
+  }
+
+  const orgId = orgIdData as string;
+
   /* ---------- CONFIG ---------- */
 
   const apiKey = process.env.GEMINI_API_KEY;
@@ -93,8 +107,8 @@ export async function POST(request: Request) {
       .from("documents")
       .select("id, title, file_name, mime_type")
       .eq("id", documentId)
-      /* explicit owner scope (defense in depth on RLS) */
-      .eq("uploaded_by", user.id)
+      /* explicit org scope (defense in depth on RLS) */
+      .eq("organization_id", orgId)
       .maybeSingle();
 
     if (error) {
@@ -130,7 +144,7 @@ export async function POST(request: Request) {
     const { data: pdfDocs, error: docsError } = await supabase
       .from("documents")
       .select("id, title, file_name, mime_type")
-      .eq("uploaded_by", user.id)
+      .eq("organization_id", orgId)
       .order("created_at", { ascending: false })
       .limit(100);
 
@@ -245,7 +259,7 @@ export async function POST(request: Request) {
         .from("document_chunks")
         .delete()
         .eq("document_id", doc.id)
-        .eq("uploaded_by", user.id);
+        .eq("organization_id", orgId);
 
       if (deleteError) {
         throw deleteError;
@@ -256,6 +270,7 @@ export async function POST(request: Request) {
         .insert(
           chunks.map((chunk, i) => ({
             document_id: doc.id,
+            organization_id: orgId,
             uploaded_by: user.id,
             chunk_index: chunk.index,
             content: chunk.content,

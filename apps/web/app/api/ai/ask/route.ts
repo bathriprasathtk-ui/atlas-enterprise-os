@@ -182,6 +182,25 @@ export async function POST(request: Request) {
 
     /*
      * =========================================================
+     * RESOLVE ORGANIZATION
+     * =========================================================
+     */
+
+    const { data: orgIdData } = await supabase.rpc(
+      "current_org_id"
+    );
+
+    if (!orgIdData) {
+      return NextResponse.json(
+        { error: "Join an organization first." },
+        { status: 403 }
+      );
+    }
+
+    const orgId = orgIdData as string;
+
+    /*
+     * =========================================================
      * READ QUESTION
      * =========================================================
      */
@@ -237,8 +256,8 @@ export async function POST(request: Request) {
       .select(
         "id, title, file_name, mime_type, created_at"
       )
-      /* Only the current user's documents (RLS + explicit scope). */
-      .eq("uploaded_by", user.id)
+      /* The caller's organization documents (RLS + explicit scope). */
+      .eq("organization_id", orgId)
       .order("created_at", {
         ascending: false,
       });

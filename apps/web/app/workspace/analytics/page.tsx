@@ -344,9 +344,10 @@ export default function AnalyticsPage() {
 
       {/* Honest labeling */}
       <p className="text-[11px] leading-5 text-slate-700">
-        All metrics are computed from data owned by your
-        account. Team-wide analytics require shared
-        workspaces, which are not yet implemented.
+        All metrics are computed from your
+        organization&apos;s tasks, projects and documents.
+        Row-level security keeps every other
+        organization&apos;s data out of these charts.
       </p>
     </div>
   );

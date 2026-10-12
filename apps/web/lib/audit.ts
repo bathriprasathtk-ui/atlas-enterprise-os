@@ -12,6 +12,7 @@
 ========================================================= */
 
 import type { AuditEntry, LogAuditInput } from "./auditServer.ts";
+import { getCurrentOrgId } from "./orgContext.ts";
 import { supabase } from "./supabaseClient.ts";
 
 export type { AuditEntry } from "./auditServer.ts";
@@ -28,8 +29,15 @@ export async function logAuditClient(
       return;
     }
 
+    const orgId = await getCurrentOrgId();
+
+    if (!orgId) {
+      return;
+    }
+
     await supabase.from("audit_logs").insert({
       user_id: user.id,
+      organization_id: orgId,
       action: input.action,
       entity: input.entity,
       entity_id: input.entityId ?? null,

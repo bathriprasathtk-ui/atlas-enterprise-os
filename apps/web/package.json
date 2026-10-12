@@ -9,9 +9,11 @@
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
     "test": "node --experimental-strip-types --test lib/__tests__/*.test.ts",
-    "test:db": "node scripts/db-tests.mjs"
+    "test:db": "node scripts/db-tests.mjs",
+    "test:e2e": "node scripts/e2e.mjs"
   },
   "dependencies": {
+    "@knocklabs/node": "^1.36.0",
     "@supabase/ssr": "^0.12.4",
     "@supabase/supabase-js": "^2.112.1",
     "framer-motion": "^12.42.2",
@@ -29,11 +31,11 @@
     "@types/pdf-parse": "^1.1.5",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "embedded-postgres": "^18.4.0-beta.15",
     "eslint": "^9",
     "eslint-config-next": "16.2.11",
+    "pg": "^8.16.3",
     "tailwindcss": "^4",
-    "typescript": "^5",
-    "embedded-postgres": "^18.4.0-beta.15",
-    "pg": "^8.16.3"
+    "typescript": "^5"
   }
 }

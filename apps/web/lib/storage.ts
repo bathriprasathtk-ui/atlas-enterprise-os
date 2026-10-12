@@ -62,12 +62,27 @@ async function requireAuthUser() {
 }
 
 /**
- * Storage paths are user-scoped: `{userId}/{timestamp}-{filename}`.
- * Verifies that a path belongs to the given user before any
- * storage operation (defense in depth on top of RLS policies).
+ * A storage path is accessible when its document row is
+ * visible to the caller under RLS: their own upload, or a
+ * document shared inside their organization (migration 0005).
+ * Defense in depth on top of the storage policies.
  */
-function assertOwnedPath(path: string, userId: string) {
-  if (!path || !path.startsWith(`${userId}/`)) {
+export async function assertVisibleDocument(path: string) {
+  if (!path) {
+    throw new Error("File name is missing.");
+  }
+
+  const { data, error } = await supabase
+    .from("documents")
+    .select("id")
+    .eq("file_name", path)
+    .maybeSingle();
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  if (!data) {
     throw new Error("You do not have access to this document.");
   }
 }
@@ -123,13 +138,13 @@ export async function createSignedDocumentUrl(
   fileName: string,
   expiresInSeconds = 3600
 ): Promise<string> {
-  const user = await requireAuthUser();
+  await requireAuthUser();
 
   if (!fileName) {
     throw new Error("File name is missing.");
   }
 
-  assertOwnedPath(fileName, user.id);
+  await assertVisibleDocument(fileName);
 
   const { data, error } = await supabase.storage
     .from("documents")
@@ -152,13 +167,13 @@ export async function createSignedDocumentUrl(
 ========================================================= */
 
 export async function removeStoredDocument(fileName: string) {
-  const user = await requireAuthUser();
+  await requireAuthUser();
 
   if (!fileName) {
     throw new Error("File name is missing.");
   }
 
-  assertOwnedPath(fileName, user.id);
+  await assertVisibleDocument(fileName);
 
   const { error } = await supabase.storage
     .from("documents")

@@ -5,11 +5,12 @@
    Body: { query: string }
 
    Returns document-level matches (best chunk per document)
-   ranked by cosine similarity against the signed-in user's
-   OWN indexed documents only.
+   ranked by cosine similarity across the signed-in user's
+   ORGANIZATION indexed documents (migration 0005).
 
-   RLS + match_document_chunks(auth.uid()) guarantee no
-   cross-user results; embedding uses the server-side key.
+   RLS + match_document_chunks' organization scope guarantee
+   no cross-organization results; embedding uses the
+   server-side key.
 ========================================================= */
 
 import { NextResponse } from "next/server";
@@ -29,6 +30,17 @@ const SEARCH_MATCH_COUNT = 12;
 const SEARCH_MIN_SIMILARITY = 0.3;
 
 const SNIPPET_LENGTH = 180;
+
+/** Maximum article keyword hits returned per search. */
+const ARTICLE_HIT_COUNT = 5;
+
+/**
+ * PostgREST `ilike` filter values must not contain the
+ * characters that delimit `.or()` expressions.
+ */
+function sanitizeForIlike(value: string): string {
+  return value.replace(/[%_,()\\]/g, " ").trim();
+}
 
 function snippet(content: string): string {
   const clean = content.replace(/\s+/g, " ").trim();
@@ -117,9 +129,40 @@ export async function POST(request: Request) {
       });
     }
 
+    /*
+     * Articles are plain text (not embedded), so they are
+     * matched by keyword rather than similarity. Honest
+     * labelling: the UI calls these keyword matches.
+     */
+    const needle = sanitizeForIlike(query).slice(0, 120);
+    let articles: {
+      id: string;
+      title: string;
+      category: string | null;
+    }[] = [];
+
+    if (needle.length >= 2) {
+      const { data: articleRows, error: articleError } =
+        await supabase
+          .from("knowledge_articles")
+          .select("id, title, category")
+          .or(
+            `title.ilike.%${needle}%,content.ilike.%${needle}%`
+          )
+          .order("updated_at", { ascending: false })
+          .limit(ARTICLE_HIT_COUNT);
+
+      if (articleError) {
+        console.error("Article keyword search error:", articleError);
+      } else {
+        articles = (articleRows ?? []) as typeof articles;
+      }
+    }
+
     return NextResponse.json({
       query,
       documents,
+      articles,
       minSimilarity: SEARCH_MIN_SIMILARITY,
       defaultMinSimilarity: MIN_SIMILARITY,
     });

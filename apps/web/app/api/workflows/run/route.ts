@@ -49,13 +49,18 @@ export async function POST(request: Request) {
       );
     }
 
-    /* Load the workflow — explicit owner scoping + RLS. */
+    /* Caller's organization (RLS still enforces membership). */
+    const { data: orgId } = await supabase.rpc(
+      "current_org_id"
+    );
+
+    /* Load the workflow — explicit org scoping + RLS. */
     const { data: workflow, error: workflowError } =
       await supabase
         .from("workflows")
         .select("id, name, kind, config, status")
         .eq("id", workflowId)
-        .eq("created_by", user.id)
+        .eq("organization_id", (orgId ?? "-") as string)
         .single();
 
     if (workflowError || !workflow) {
@@ -119,7 +124,7 @@ export async function POST(request: Request) {
           await supabase
             .from("tasks")
             .select("id, title, due_date, status, priority")
-            .eq("created_by", user.id)
+            .eq("organization_id", orgId as string)
             .neq("status", "done")
             .not("due_date", "is", null)
             .lte("due_date", untilString)
@@ -154,7 +159,7 @@ export async function POST(request: Request) {
           await supabase
             .from("documents")
             .select("id, title, created_at")
-            .eq("uploaded_by", user.id)
+            .eq("organization_id", orgId as string)
             .gte("created_at", since.toISOString())
             .order("created_at", { ascending: false });
 
@@ -193,6 +198,7 @@ export async function POST(request: Request) {
     try {
       await supabase.from("workflow_runs").insert({
         workflow_id: row.id,
+        organization_id: orgId as string,
         created_by: user.id,
         status,
         message,
@@ -204,7 +210,7 @@ export async function POST(request: Request) {
         .from("workflows")
         .update({ last_run_at: finishedAt })
         .eq("id", row.id)
-        .eq("created_by", user.id);
+        .eq("organization_id", orgId as string);
 
       /* Audit trail for the dashboard activity feed. */
       await logAudit(supabase, {

@@ -43,8 +43,17 @@ export async function saveConversation(
       return;
     }
 
+    const { data: orgId } = await serverSupabase.rpc(
+      "current_org_id"
+    );
+
+    if (!orgId) {
+      return;
+    }
+
     await serverSupabase.from("ai_conversations").insert({
       user_id: user.id,
+      organization_id: orgId as string,
       prompt: input.prompt.slice(0, 8000),
       response: input.response.slice(0, 32000),
       model: input.model,

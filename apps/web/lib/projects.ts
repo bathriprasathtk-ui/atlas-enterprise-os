@@ -1,4 +1,8 @@
 import { logAuditClient } from "./audit.ts";
+import {
+  getCurrentOrgId,
+  requireOrgId,
+} from "./orgContext.ts";
 import { supabase } from "./supabaseClient.ts";
 
 export type ProjectStatus =
@@ -24,19 +28,11 @@ export type CreateProjectInput = {
   progress?: number;
 };
 
-async function getCurrentUserId(): Promise<string | null> {
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-
-  return user?.id ?? null;
-}
-
 export async function getProjects(): Promise<Project[]> {
-  const userId = await getCurrentUserId();
+  const orgId = await getCurrentOrgId();
 
-  /* Signed out: return an empty list instead of erroring. */
-  if (!userId) {
+  /* Signed out or no organization yet: empty list. */
+  if (!orgId) {
     return [];
   }
 
@@ -46,8 +42,8 @@ export async function getProjects(): Promise<Project[]> {
   } = await supabase
     .from("projects")
     .select("*")
-    /* Explicit per-user scoping (defense in depth on top of RLS). */
-    .eq("created_by", userId)
+    /* Explicit org scoping (defense in depth on top of RLS). */
+    .eq("organization_id", orgId)
     .order("created_at", {
       ascending: false,
     });
@@ -77,12 +73,15 @@ export async function createProject(
     );
   }
 
+  const orgId = await requireOrgId();
+
   const {
     data,
     error,
   } = await supabase
     .from("projects")
     .insert({
+      organization_id: orgId,
       name: project.name.trim(),
       description:
         project.description?.trim() || null,
@@ -110,11 +109,7 @@ export async function updateProject(
   id: string,
   updates: Partial<CreateProjectInput>
 ): Promise<Project> {
-  const userId = await getCurrentUserId();
-
-  if (!userId) {
-    throw new Error("You must be logged in to update a project.");
-  }
+  const orgId = await requireOrgId();
 
   const {
     data,
@@ -126,8 +121,8 @@ export async function updateProject(
       updated_at: new Date().toISOString(),
     })
     .eq("id", id)
-    /* Explicit per-user scoping (defense in depth on top of RLS). */
-    .eq("created_by", userId)
+    /* Explicit org scoping (defense in depth on top of RLS). */
+    .eq("organization_id", orgId)
     .select()
     .single();
 
@@ -147,23 +142,25 @@ export async function updateProject(
 export async function deleteProject(
   id: string
 ): Promise<void> {
-  const userId = await getCurrentUserId();
+  const orgId = await requireOrgId();
 
-  if (!userId) {
-    throw new Error("You must be logged in to delete a project.");
-  }
-
-  const {
-    error,
-  } = await supabase
+  const { data: deleted, error } = await supabase
     .from("projects")
     .delete()
     .eq("id", id)
-    /* Explicit per-user scoping (defense in depth on top of RLS). */
-    .eq("created_by", userId);
+    /* Explicit org scoping (defense in depth on top of RLS). */
+    .eq("organization_id", orgId)
+    .select("id");
 
   if (error) {
     throw error;
+  }
+
+  /* A 0-row delete means RLS denied it (creator-or-admin). */
+  if (!deleted || deleted.length === 0) {
+    throw new Error(
+      "Only the creator or an organization administrator can delete this project."
+    );
   }
 
   await logAuditClient({

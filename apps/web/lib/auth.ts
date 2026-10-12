@@ -37,6 +37,21 @@ export async function signUp(
  * Sends a password-reset link. The response is deliberately
  * generic so account existence is never disclosed.
  */
+/**
+ * Google single sign-on. Only useful when the Google provider
+ * is configured in the Supabase dashboard; the button that
+ * calls this is hidden unless NEXT_PUBLIC_ENABLE_GOOGLE_LOGIN
+ * is "1" at build time.
+ */
+export async function signInWithGoogle() {
+  return supabase.auth.signInWithOAuth({
+    provider: "google",
+    options: {
+      redirectTo: `${window.location.origin}/workspace/dashboard`,
+    },
+  });
+}
+
 export async function sendPasswordReset(email: string) {
   return supabase.auth.resetPasswordForEmail(email, {
     redirectTo: `${window.location.origin}/reset-password`,

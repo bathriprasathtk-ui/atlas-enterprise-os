@@ -8,6 +8,10 @@
 ========================================================= */
 
 import { logAuditClient } from "./audit.ts";
+import {
+  getCurrentOrgId,
+  requireOrgId,
+} from "./orgContext.ts";
 import { supabase } from "./supabaseClient.ts";
 
 export type WorkflowKind =
@@ -56,16 +60,16 @@ async function getCurrentUserId(): Promise<string | null> {
 }
 
 export async function getWorkflows(): Promise<Workflow[]> {
-  const userId = await getCurrentUserId();
+  const orgId = await getCurrentOrgId();
 
-  if (!userId) {
+  if (!orgId) {
     return [];
   }
 
   const { data, error } = await supabase
     .from("workflows")
     .select("*")
-    .eq("created_by", userId)
+    .eq("organization_id", orgId)
     .order("created_at", { ascending: false });
 
   if (error) {
@@ -91,6 +95,8 @@ export async function createWorkflow(
     throw new Error("You must be signed in.");
   }
 
+  const orgId = await requireOrgId();
+
   const name = input.name.trim();
 
   if (!name || name.length > 120) {
@@ -112,6 +118,7 @@ export async function createWorkflow(
   const { data, error } = await supabase
     .from("workflows")
     .insert({
+      organization_id: orgId,
       name,
       description: input.description?.trim() || null,
       kind: input.kind,
@@ -138,17 +145,13 @@ export async function setWorkflowStatus(
   id: string,
   status: WorkflowStatus
 ): Promise<void> {
-  const userId = await getCurrentUserId();
-
-  if (!userId) {
-    throw new Error("You must be signed in.");
-  }
+  const orgId = await requireOrgId();
 
   const { error } = await supabase
     .from("workflows")
     .update({ status })
     .eq("id", id)
-    .eq("created_by", userId);
+    .eq("organization_id", orgId);
 
   if (error) {
     throw new Error(error.message);
@@ -163,20 +166,24 @@ export async function setWorkflowStatus(
 }
 
 export async function deleteWorkflow(id: string): Promise<void> {
-  const userId = await getCurrentUserId();
+  const orgId = await requireOrgId();
 
-  if (!userId) {
-    throw new Error("You must be signed in.");
-  }
-
-  const { error } = await supabase
+  const { data: deleted, error } = await supabase
     .from("workflows")
     .delete()
     .eq("id", id)
-    .eq("created_by", userId);
+    .eq("organization_id", orgId)
+    .select("id");
 
   if (error) {
     throw new Error(error.message);
+  }
+
+  /* A 0-row delete means RLS denied it (creator-or-admin). */
+  if (!deleted || deleted.length === 0) {
+    throw new Error(
+      "Only the creator or an organization administrator can delete this workflow."
+    );
   }
 
   await logAuditClient({
@@ -229,16 +236,16 @@ export async function listWorkflowRuns(
   workflowId?: string,
   limit = 10
 ): Promise<WorkflowRun[]> {
-  const userId = await getCurrentUserId();
+  const orgId = await getCurrentOrgId();
 
-  if (!userId) {
+  if (!orgId) {
     return [];
   }
 
   let query = supabase
     .from("workflow_runs")
     .select("*")
-    .eq("created_by", userId)
+    .eq("organization_id", orgId)
     .order("started_at", { ascending: false })
     .limit(limit);
 

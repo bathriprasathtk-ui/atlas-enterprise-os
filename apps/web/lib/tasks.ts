@@ -1,12 +1,16 @@
 /* =========================================================
    TASKS (client data layer)
 
-   Every query is explicitly scoped to the authenticated
-   user on top of the owner-only RLS policies in
-   supabase/migrations/0003_core.sql.
+   Every query is explicitly scoped to the caller's
+   organization on top of the org-scoped RLS policies in
+   supabase/migrations/0005_organizations.sql.
 ========================================================= */
 
 import { logAuditClient } from "./audit.ts";
+import {
+  getCurrentOrgId,
+  requireOrgId,
+} from "./orgContext.ts";
 import { supabase } from "./supabaseClient.ts";
 
 export type TaskStatus = "todo" | "in_progress" | "done";
@@ -88,16 +92,16 @@ export function validateTaskInput(input: {
 ========================================================= */
 
 export async function getTasks(): Promise<Task[]> {
-  const userId = await getCurrentUserId();
+  const orgId = await getCurrentOrgId();
 
-  if (!userId) {
+  if (!orgId) {
     return [];
   }
 
   const { data, error } = await supabase
     .from("tasks")
     .select("*")
-    .eq("created_by", userId)
+    .eq("organization_id", orgId)
     .order("created_at", { ascending: false });
 
   if (error) {
@@ -126,9 +130,12 @@ export async function createTask(
     throw new Error(validation);
   }
 
+  const orgId = await requireOrgId();
+
   const { data, error } = await supabase
     .from("tasks")
     .insert({
+      organization_id: orgId,
       title: input.title.trim(),
       description: input.description?.trim() || null,
       project_id: input.project_id || null,
@@ -161,11 +168,7 @@ export async function updateTask(
   id: string,
   patch: UpdateTaskInput
 ): Promise<void> {
-  const userId = await getCurrentUserId();
-
-  if (!userId) {
-    throw new Error("You must be signed in to update a task.");
-  }
+  const orgId = await requireOrgId();
 
   if (patch.title !== undefined) {
     const validation = validateTaskInput({
@@ -201,7 +204,7 @@ export async function updateTask(
         : {}),
     })
     .eq("id", id)
-    .eq("created_by", userId);
+    .eq("organization_id", orgId);
 
   if (error) {
     throw new Error(error.message);
@@ -219,20 +222,24 @@ export async function updateTask(
 ========================================================= */
 
 export async function deleteTask(id: string): Promise<void> {
-  const userId = await getCurrentUserId();
+  const orgId = await requireOrgId();
 
-  if (!userId) {
-    throw new Error("You must be signed in to delete a task.");
-  }
-
-  const { error } = await supabase
+  const { data: deleted, error } = await supabase
     .from("tasks")
     .delete()
     .eq("id", id)
-    .eq("created_by", userId);
+    .eq("organization_id", orgId)
+    .select("id");
 
   if (error) {
     throw new Error(error.message);
+  }
+
+  /* A 0-row delete means RLS denied it (creator-or-admin). */
+  if (!deleted || deleted.length === 0) {
+    throw new Error(
+      "Only the creator or an organization administrator can delete this task."
+    );
   }
 
   await logAuditClient({

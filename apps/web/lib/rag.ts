@@ -3,9 +3,10 @@
 
    Semantic retrieval helpers shared by the AI ask route and
    the Knowledge semantic-search API. All queries are scoped
-   to the caller's own data twice over:
-     1. RLS policies from 0001/0002 (auth.uid())
-     2. match_document_chunks() itself filters by auth.uid()
+   to the caller's organization twice over:
+     1. RLS policies from 0005 (organization_id)
+     2. match_document_chunks() itself filters by the
+        caller's organization (replaced in migration 0005)
 ========================================================= */
 
 import type { SupabaseClient } from "@supabase/supabase-js";

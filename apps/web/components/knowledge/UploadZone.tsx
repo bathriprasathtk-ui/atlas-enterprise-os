@@ -62,6 +62,17 @@ export default function UploadZone({ onUploaded }: UploadZoneProps) {
         return;
       }
 
+      const { data: orgId } = await supabase.rpc(
+        "current_org_id"
+      );
+
+      if (!orgId) {
+        setError(
+          "Join or create an organization before uploading documents."
+        );
+        return;
+      }
+
       /* ---------- UPLOAD TO STORAGE ---------- */
 
       const { fileName } = await uploadDocument(file);
@@ -72,6 +83,7 @@ export default function UploadZone({ onUploaded }: UploadZoneProps) {
         await supabase
           .from("documents")
           .insert({
+            organization_id: orgId as string,
             title: file.name,
             file_name: fileName,
             file_url: "",

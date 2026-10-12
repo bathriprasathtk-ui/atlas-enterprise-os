@@ -9,16 +9,28 @@ import {
 import {
   AlertTriangle,
   Bell,
+  Building2,
   Check,
   Lock,
+  LogOut,
   Moon,
   Save,
   Shield,
+  Trash2,
   User,
   Settings as SettingsIcon,
 } from "lucide-react";
 
 import { getCurrentUser, type CurrentUser } from "@/lib/auth";
+import { getCurrentOrg } from "@/lib/orgContext";
+import {
+  deleteMyOrganization,
+  getMyOrganization,
+  leaveOrganization,
+  renameOrganization,
+  type Organization,
+  type OrgRole,
+} from "@/lib/orgs";
 import { logAuditClient } from "@/lib/audit";
 import {
   getOwnProfile,
@@ -26,12 +38,26 @@ import {
   type Profile,
 } from "@/lib/profiles";
 import {
+  disableTotp,
+  enrollTotp,
+  listTotpFactors,
+  verifyTotp,
+  type TotpEnrollment,
+  type TotpFactor,
+} from "@/lib/mfa";
+import {
   getBadgePrefServerSnapshot,
   getBadgePrefSnapshot,
   setBadgePref,
   subscribeToBadgePref,
 } from "@/lib/notifications";
 import { supabase } from "@/lib/supabaseClient";
+
+const ORG_ROLE_LABEL: Record<OrgRole, string> = {
+  owner: "Owner",
+  admin: "Admin",
+  member: "Member",
+};
 
 export default function SettingsPage() {
   /* ---------------- account data ---------------- */
@@ -52,6 +78,30 @@ export default function SettingsPage() {
     text: string;
   } | null>(null);
 
+  /* ---------------- organization ---------------- */
+  const [organization, setOrganization] =
+    useState<Organization | null>(null);
+  const [orgRole, setOrgRole] = useState<OrgRole | null>(null);
+  const [orgNameInput, setOrgNameInput] = useState("");
+  const [savingOrg, setSavingOrg] = useState(false);
+  const [orgMessage, setOrgMessage] = useState<{
+    kind: "success" | "error";
+    text: string;
+  } | null>(null);
+
+  /* ---------------- two-factor (TOTP) ---------------- */
+  const [totpFactors, setTotpFactors] = useState<TotpFactor[]>(
+    []
+  );
+  const [enrollment, setEnrollment] =
+    useState<TotpEnrollment | null>(null);
+  const [mfaCode, setMfaCode] = useState("");
+  const [mfaBusy, setMfaBusy] = useState(false);
+  const [mfaMessage, setMfaMessage] = useState<{
+    kind: "success" | "error";
+    text: string;
+  } | null>(null);
+
   /* ---------------- password ---------------- */
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -66,13 +116,26 @@ export default function SettingsPage() {
     setAccountError(null);
 
     try {
-      const [user, ownProfile] = await Promise.all([
+      const [user, ownProfile, snapshot] = await Promise.all([
         getCurrentUser(),
         getOwnProfile().catch(() => null),
+        getCurrentOrg(),
       ]);
 
+      const org = snapshot?.orgId
+        ? await getMyOrganization().catch(() => null)
+        : null;
+
+      const factors = await listTotpFactors().catch(
+        () => [] as TotpFactor[]
+      );
+
+      setTotpFactors(factors);
       setCurrentUser(user);
       setProfile(ownProfile);
+      setOrganization(org);
+      setOrgRole(snapshot?.role ?? null);
+      setOrgNameInput(org?.name ?? "");
     } catch (err) {
       setAccountError(
         err instanceof Error
@@ -151,6 +214,206 @@ export default function SettingsPage() {
     }
   }
 
+  /* ---------------- two-factor (TOTP) ---------------- */
+  async function refreshFactors(): Promise<TotpFactor[]> {
+    const factors = await listTotpFactors().catch(
+      () => [] as TotpFactor[]
+    );
+
+    setTotpFactors(factors);
+    return factors;
+  }
+
+  async function handleMfaStart(): Promise<void> {
+    if (mfaBusy) return;
+
+    setMfaBusy(true);
+    setMfaMessage(null);
+
+    try {
+      /* A pending factor from an interrupted setup cannot
+         reveal its secret again — restart it cleanly. */
+      const pending = totpFactors.find(
+        (factor) => factor.status === "unverified"
+      );
+
+      if (pending) {
+        await disableTotp(pending.id);
+        await refreshFactors();
+      }
+
+      setEnrollment(await enrollTotp());
+      setMfaCode("");
+    } catch (err) {
+      setMfaMessage({
+        kind: "error",
+        text:
+          err instanceof Error
+            ? err.message
+            : "Two-factor setup could not be started.",
+      });
+    } finally {
+      setMfaBusy(false);
+    }
+  }
+
+  async function handleMfaVerify(): Promise<void> {
+    if (mfaBusy || !enrollment) return;
+
+    if (!/^\d{6}$/.test(mfaCode.trim())) {
+      setMfaMessage({
+        kind: "error",
+        text: "Enter the 6-digit code from your authenticator app.",
+      });
+      return;
+    }
+
+    setMfaBusy(true);
+    setMfaMessage(null);
+
+    try {
+      await verifyTotp(enrollment.factorId, mfaCode);
+      setEnrollment(null);
+      setMfaCode("");
+      await refreshFactors();
+      setMfaMessage({
+        kind: "success",
+        text: "Two-factor authentication is now on for your account.",
+      });
+    } catch (err) {
+      setMfaMessage({
+        kind: "error",
+        text:
+          err instanceof Error
+            ? err.message
+            : "That code was not accepted. Try the current code.",
+      });
+    } finally {
+      setMfaBusy(false);
+    }
+  }
+
+  async function handleMfaDisable(
+    factorId: string
+  ): Promise<void> {
+    if (mfaBusy) return;
+
+    const confirmed = window.confirm(
+      "Turn off two-factor authentication for your account?"
+    );
+
+    if (!confirmed) return;
+
+    setMfaBusy(true);
+    setMfaMessage(null);
+
+    try {
+      await disableTotp(factorId);
+      setEnrollment(null);
+      await refreshFactors();
+      setMfaMessage({
+        kind: "success",
+        text: "Two-factor authentication is off.",
+      });
+    } catch (err) {
+      setMfaMessage({
+        kind: "error",
+        text:
+          err instanceof Error
+            ? err.message
+            : "Two-factor authentication could not be turned off.",
+      });
+    } finally {
+      setMfaBusy(false);
+    }
+  }
+
+  /* ---------------- organization ---------------- */
+  async function handleOrgRename(
+    event: React.FormEvent
+  ): Promise<void> {
+    event.preventDefault();
+
+    if (savingOrg) return;
+
+    setSavingOrg(true);
+    setOrgMessage(null);
+
+    try {
+      await renameOrganization(orgNameInput);
+      await loadAccount();
+      setOrgMessage({
+        kind: "success",
+        text: "Organization renamed.",
+      });
+    } catch (err) {
+      setOrgMessage({
+        kind: "error",
+        text:
+          err instanceof Error
+            ? err.message
+            : "Could not rename the organization.",
+      });
+    } finally {
+      setSavingOrg(false);
+    }
+  }
+
+  async function handleLeaveOrg(): Promise<void> {
+    if (!organization || savingOrg) return;
+
+    const confirmed = window.confirm(
+      `Leave "${organization.name}"? You will lose access to its projects, tasks and documents unless an administrator invites you back.`
+    );
+
+    if (!confirmed) return;
+
+    setSavingOrg(true);
+    setOrgMessage(null);
+
+    try {
+      await leaveOrganization();
+      /* The onboarding gate takes over on the next load. */
+      window.location.href = "/workspace";
+    } catch (err) {
+      setSavingOrg(false);
+      setOrgMessage({
+        kind: "error",
+        text:
+          err instanceof Error
+            ? err.message
+            : "Could not leave the organization.",
+      });
+    }
+  }
+
+  async function handleDeleteOrg(): Promise<void> {
+    if (!organization || savingOrg) return;
+
+    const confirmed = window.confirm(
+      `Delete "${organization.name}" permanently? Every project, task, document and member of this organization will be removed. This cannot be undone.`
+    );
+
+    if (!confirmed) return;
+
+    setSavingOrg(true);
+    setOrgMessage(null);
+
+    try {
+      await deleteMyOrganization();
+      window.location.href = "/workspace";
+    } catch (err) {
+      setSavingOrg(false);
+      setOrgMessage({
+        kind: "error",
+        text:
+          err instanceof Error
+            ? err.message
+            : "Could not delete the organization.",
+      });
+    }
+  }
+
   /* ---------------- notifications preference ---------------- */
   function toggleNotifications(): void {
     setBadgePref(!notificationsEnabled);
@@ -212,6 +475,14 @@ export default function SettingsPage() {
     }
   }
 
+  const verifiedTotp = totpFactors.find(
+    (factor) => factor.status === "verified"
+  );
+
+  const pendingTotp = totpFactors.some(
+    (factor) => factor.status === "unverified"
+  );
+
   const initials =
     (profile?.display_name || currentUser?.displayName || "U")
       .split(/\s+/)
@@ -241,8 +512,8 @@ export default function SettingsPage() {
             </h1>
 
             <p className="mt-1.5 max-w-2xl text-sm text-slate-500">
-              Manage your Atlas account, preferences and
-              security.
+              Manage your account, organization, preferences
+              and security.
             </p>
           </div>
         </div>
@@ -417,6 +688,149 @@ export default function SettingsPage() {
               </form>
             )}
           </>
+        )}
+      </section>
+
+      {/* Organization */}
+      <section className="rounded-2xl border border-white/[0.07] bg-white/[0.025] p-5 backdrop-blur-xl sm:p-6">
+        <div className="mb-5">
+          <h2 className="text-sm font-semibold text-white">
+            Organization
+          </h2>
+
+          <p className="mt-1 text-xs text-slate-600">
+            Atlas scopes every project, task and document to a
+            single organization. You belong to exactly one.
+          </p>
+        </div>
+
+        {loadingAccount ? (
+          <div
+            className="h-16 animate-pulse rounded-xl border border-white/[0.05] bg-white/[0.02]"
+            aria-busy="true"
+          />
+        ) : !organization ? (
+          <p className="text-xs text-slate-600">
+            You are not part of an organization yet.
+          </p>
+        ) : (
+          <div className="space-y-2">
+            {/* Current organization */}
+            <div className="flex items-center gap-4 rounded-xl border border-white/[0.05] bg-black/[0.08] p-4">
+              <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-white/[0.035]">
+                <Building2 size={16} className="text-slate-400" />
+              </div>
+
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-sm font-medium text-white">
+                  {organization.name}
+                </p>
+
+                <p className="mt-0.5 text-[11px] text-slate-500">
+                  {orgRole === "owner"
+                    ? "You own this organization: you can rename it, manage roles and delete it."
+                    : orgRole === "admin"
+                      ? "You are an administrator: you can invite members and manage departments."
+                      : "You are a member of this organization."}
+                </p>
+              </div>
+
+              {orgRole ? (
+                <span className="shrink-0 rounded-full border border-cyan-400/20 bg-cyan-400/[0.07] px-2.5 py-1 text-[10px] font-medium text-cyan-300">
+                  {ORG_ROLE_LABEL[orgRole]}
+                </span>
+              ) : null}
+            </div>
+
+            {/* Rename (owner or admin — RLS enforces this) */}
+            {orgRole === "owner" || orgRole === "admin" ? (
+              <form
+                onSubmit={handleOrgRename}
+                className="rounded-xl border border-white/[0.05] bg-black/[0.08] p-4"
+              >
+                <label
+                  htmlFor="settings-org-name"
+                  className="mb-1.5 block text-xs font-medium text-slate-400"
+                >
+                  Organization name
+                </label>
+
+                <div className="flex flex-wrap gap-2">
+                  <input
+                    id="settings-org-name"
+                    type="text"
+                    required
+                    maxLength={120}
+                    value={orgNameInput}
+                    onChange={(event) =>
+                      setOrgNameInput(event.target.value)
+                    }
+                    className="h-10 min-w-[200px] flex-1 rounded-lg border border-white/[0.07] bg-white/[0.03] px-3 text-sm text-white outline-none transition-colors focus:border-cyan-400/30"
+                  />
+
+                  <button
+                    type="submit"
+                    disabled={savingOrg || !orgNameInput.trim()}
+                    className="inline-flex items-center gap-2 rounded-lg bg-cyan-400/10 px-3 py-2 text-xs font-medium text-cyan-400 transition-colors hover:bg-cyan-400/[0.16] disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    <Save size={13} />
+                    {savingOrg ? "Saving..." : "Rename"}
+                  </button>
+                </div>
+              </form>
+            ) : null}
+
+            {orgMessage ? (
+              <p
+                role={orgMessage.kind === "error" ? "alert" : "status"}
+                className={`text-xs ${
+                  orgMessage.kind === "success"
+                    ? "text-emerald-400"
+                    : "text-amber-400"
+                }`}
+              >
+                {orgMessage.text}
+              </p>
+            ) : null}
+
+            {/* Danger zone */}
+            <div className="rounded-xl border border-white/[0.05] bg-black/[0.08] p-4">
+              <p className="text-xs font-medium text-slate-300">
+                Leave or delete
+              </p>
+
+              <p className="mt-1 text-[11px] leading-5 text-slate-600">
+                Leaving removes your access to this
+                organization&apos;s data. The last owner can
+                neither leave nor be removed, and only an owner
+                can delete the organization.
+              </p>
+
+              <div className="mt-3 flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  disabled={savingOrg}
+                  onClick={() => void handleLeaveOrg()}
+                  className="inline-flex items-center gap-2 rounded-lg border border-white/[0.07] px-3 py-2 text-xs font-medium text-slate-400 transition-colors hover:bg-white/[0.05] hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <LogOut size={13} />
+                  Leave organization
+                </button>
+
+                {orgRole === "owner" ? (
+                  <button
+                    type="button"
+                    disabled={savingOrg}
+                    onClick={() => void handleDeleteOrg()}
+                    className="inline-flex items-center gap-2 rounded-lg border border-red-400/20 px-3 py-2 text-xs font-medium text-red-300/80 transition-colors hover:border-red-400/40 hover:bg-red-400/[0.08] hover:text-red-300 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    <Trash2 size={13} />
+                    Delete organization
+                  </button>
+                ) : null}
+              </div>
+            </div>
+          </div>
         )}
       </section>
 
@@ -602,6 +1016,127 @@ export default function SettingsPage() {
             </button>
           </form>
 
+          {/* Two-factor authentication (TOTP) */}
+          <div className="rounded-xl border border-white/[0.05] bg-black/[0.08] p-4">
+            <div className="flex items-center gap-3">
+              <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-white/[0.035]">
+                <Shield size={16} className="text-slate-400" />
+              </div>
+
+              <div className="min-w-0 flex-1">
+                <p className="text-xs font-medium text-slate-300">
+                  Two-factor authentication
+                </p>
+
+                <p className="mt-0.5 text-[11px] text-slate-600">
+                  {verifiedTotp
+                    ? "A verified authenticator app is linked to your account."
+                    : "Add a time-based one-time code as a second factor."}
+                </p>
+              </div>
+
+              <span
+                className={`shrink-0 rounded-full border px-2.5 py-1 text-[10px] font-medium ${
+                  verifiedTotp
+                    ? "border-emerald-400/25 bg-emerald-400/[0.08] text-emerald-300"
+                    : "border-white/[0.1] bg-white/[0.04] text-slate-500"
+                }`}
+              >
+                {verifiedTotp ? "On" : "Off"}
+              </span>
+            </div>
+
+            {mfaMessage ? (
+              <p
+                role={mfaMessage.kind === "error" ? "alert" : "status"}
+                className={`mt-3 text-xs ${
+                  mfaMessage.kind === "success"
+                    ? "text-emerald-400"
+                    : "text-amber-400"
+                }`}
+              >
+                {mfaMessage.text}
+              </p>
+            ) : null}
+
+            {verifiedTotp ? (
+              <button
+                type="button"
+                disabled={mfaBusy}
+                onClick={() =>
+                  void handleMfaDisable(verifiedTotp.id)
+                }
+                className="mt-3 inline-flex items-center gap-2 rounded-lg border border-white/[0.07] px-3 py-2 text-xs font-medium text-slate-400 transition-colors hover:bg-white/[0.05] hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                Turn off two-factor
+              </button>
+            ) : enrollment ? (
+              <div className="mt-3 space-y-3">
+                <p className="text-[11px] leading-5 text-slate-500">
+                  Add this key to your authenticator app
+                  (Google Authenticator, 1Password, Authy…),
+                  then confirm with the 6-digit code it shows:
+                </p>
+
+                <code className="block break-all rounded-lg border border-white/[0.07] bg-black/[0.2] px-3 py-2 text-xs text-cyan-300">
+                  {enrollment.secret}
+                </code>
+
+                <div className="flex flex-wrap items-center gap-2">
+                  <label
+                    htmlFor="settings-totp-code"
+                    className="sr-only"
+                  >
+                    Authenticator code
+                  </label>
+
+                  <input
+                    id="settings-totp-code"
+                    type="text"
+                    inputMode="numeric"
+                    autoComplete="one-time-code"
+                    maxLength={6}
+                    pattern="[0-9]{6}"
+                    value={mfaCode}
+                    onChange={(event) =>
+                      setMfaCode(event.target.value)
+                    }
+                    placeholder="123456"
+                    className="h-10 w-32 rounded-lg border border-white/[0.07] bg-white/[0.03] px-3 text-sm tracking-[0.3em] text-white outline-none transition-colors placeholder:tracking-normal placeholder:text-slate-600 focus:border-cyan-400/30"
+                  />
+
+                  <button
+                    type="button"
+                    disabled={mfaBusy || !/^\d{6}$/.test(mfaCode.trim())}
+                    onClick={() => void handleMfaVerify()}
+                    className="inline-flex items-center gap-2 rounded-lg bg-cyan-400/10 px-3 py-2 text-xs font-medium text-cyan-400 transition-colors hover:bg-cyan-400/[0.16] disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    Verify and enable
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <button
+                type="button"
+                disabled={mfaBusy}
+                onClick={() => void handleMfaStart()}
+                className="mt-3 inline-flex items-center gap-2 rounded-lg bg-cyan-400/10 px-3 py-2 text-xs font-medium text-cyan-400 transition-colors hover:bg-cyan-400/[0.16] disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {pendingTotp
+                  ? "Restart setup"
+                  : "Set up two-factor"}
+              </button>
+            )}
+
+            <p className="mt-3 text-[11px] leading-4 text-slate-600">
+              Enrolling and verifying work against your
+              Supabase project&apos;s MFA support. Requiring
+              the second factor at sign-in is a project-level
+              setting — test a real sign-in before enforcing
+              it.
+            </p>
+          </div>
+
           {/* Session info */}
           <div className="flex items-center gap-4 rounded-xl border border-white/[0.05] bg-black/[0.08] p-4">
             <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-white/[0.035]">
@@ -639,9 +1174,11 @@ export default function SettingsPage() {
               </p>
 
               <p className="mt-1 text-[11px] text-slate-600">
-                Every table ships with owner-only row-level
-                security policies (migrations 0001–0003), so
-                you only ever query your own rows.
+                Every table ships with row-level security
+                (migrations 0001–0006): workspace data is
+                scoped to your organization, personal data
+                stays yours alone, and role changes are
+                enforced by the database.
               </p>
             </div>
           </div>

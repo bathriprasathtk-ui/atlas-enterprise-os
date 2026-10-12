@@ -48,8 +48,17 @@ export async function logAudit(
       return;
     }
 
+    const { data: orgId } = await serverSupabase.rpc(
+      "current_org_id"
+    );
+
+    if (!orgId) {
+      return;
+    }
+
     await serverSupabase.from("audit_logs").insert({
       user_id: user.id,
+      organization_id: orgId as string,
       action: input.action,
       entity: input.entity,
       entity_id: input.entityId ?? null,

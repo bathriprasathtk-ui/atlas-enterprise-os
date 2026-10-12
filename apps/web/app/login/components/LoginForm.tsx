@@ -7,9 +7,22 @@ import Button from "@/components/ui/Button";
 import Card from "@/components/ui/Card";
 import Input from "@/components/ui/Input";
 
-import { sendPasswordReset, signIn, signUp } from "@/lib/auth";
+import {
+  sendPasswordReset,
+  signIn,
+  signInWithGoogle,
+  signUp,
+} from "@/lib/auth";
 
 type Mode = "signin" | "signup" | "reset";
+
+/**
+ * Build-time flag: the Google button only appears when the
+ * Google provider is configured in Supabase AND this flag is
+ * set for the build. Nothing fake is ever rendered.
+ */
+const GOOGLE_SSO_ENABLED =
+  process.env.NEXT_PUBLIC_ENABLE_GOOGLE_LOGIN === "1";
 
 const HEADERS: Record<
   Mode,
@@ -148,6 +161,31 @@ export default function LoginForm() {
         "Unable to connect to the authentication service. Please try again."
       );
     } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleGoogleSignIn() {
+    if (loading) return;
+
+    setError("");
+    setNotice("");
+    setLoading(true);
+
+    try {
+      const { error: oauthError } =
+        await signInWithGoogle();
+
+      if (oauthError) {
+        setError(oauthError.message);
+        setLoading(false);
+      }
+      /* On success the browser navigates to Google. */
+    } catch (err) {
+      console.error("OAuth error:", err);
+      setError(
+        "Unable to start Google sign-in. Please try again."
+      );
       setLoading(false);
     }
   }
@@ -406,6 +444,28 @@ export default function LoginForm() {
         >
           {loading ? busyLabel : submitLabel}
         </Button>
+
+        {/* Google SSO (opt-in via build flag + provider config) */}
+        {mode === "signin" && GOOGLE_SSO_ENABLED && (
+          <>
+            <div className="my-5 flex items-center gap-3">
+              <span className="h-px flex-1 bg-white/[0.08]" />
+
+              <span className="text-xs text-slate-600">or</span>
+
+              <span className="h-px flex-1 bg-white/[0.08]" />
+            </div>
+
+            <Button
+              type="button"
+              disabled={loading}
+              onClick={() => void handleGoogleSignIn()}
+              className="h-12 w-full rounded-xl border border-white/[0.1] bg-white/[0.03] text-sm font-semibold text-slate-200 transition hover:bg-white/[0.06] disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              Continue with Google
+            </Button>
+          </>
+        )}
 
         {/* Mode switcher */}
         <p className="mt-6 text-center text-sm text-slate-500">

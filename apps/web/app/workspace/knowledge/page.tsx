@@ -1,5 +1,7 @@
 "use client";
 
+import { BookOpen } from "lucide-react";
+import Link from "next/link";
 import { useEffect, useState } from "react";
 
 import KnowledgeHeader from "@/components/knowledge/KnowledgeHeader";
@@ -28,10 +30,20 @@ type SemanticMatch = {
   similarity: number;
 };
 
+type ArticleHit = {
+  id: string;
+  title: string;
+  category: string | null;
+};
+
 type SemanticState =
   | { status: "idle" }
   | { status: "loading" }
-  | { status: "ready"; matches: SemanticMatch[] }
+  | {
+      status: "ready";
+      matches: SemanticMatch[];
+      articles: ArticleHit[];
+    }
   | { status: "fallback" };
 
 export default function KnowledgePage() {
@@ -109,11 +121,13 @@ export default function KnowledgePage() {
 
         const data = (await response.json()) as {
           documents?: SemanticMatch[];
+          articles?: ArticleHit[];
         };
 
         setSemantic({
           status: "ready",
           matches: data.documents ?? [],
+          articles: data.articles ?? [],
         });
       } catch (error) {
         if (
@@ -236,6 +250,50 @@ export default function KnowledgePage() {
       <UploadZone onUploaded={loadDocuments} />
 
       <AIKnowledgeCard />
+
+      {/* Keyword-matched organization articles */}
+      {effectiveSemantic.status === "ready" &&
+      effectiveSemantic.articles.length > 0 ? (
+        <section
+          aria-label="Matching articles"
+          className="rounded-2xl border border-white/[0.07] bg-white/[0.025] p-5 backdrop-blur-xl"
+        >
+          <h2 className="text-sm font-semibold text-white">
+            Matching articles
+          </h2>
+
+          <p className="mt-1 text-[11px] text-slate-600">
+            Keyword matches in your organization&apos;s
+            articles — articles are plain text, not embedded
+            for semantic search.
+          </p>
+
+          <div className="mt-3 space-y-2">
+            {effectiveSemantic.articles.map((article) => (
+              <Link
+                key={article.id}
+                href={`/workspace/knowledge/articles/${article.id}`}
+                className="group flex items-center gap-3 rounded-xl border border-white/[0.05] bg-black/[0.08] p-3.5 transition-colors hover:border-white/[0.09] hover:bg-white/[0.02]"
+              >
+                <BookOpen
+                  size={15}
+                  className="shrink-0 text-slate-500"
+                />
+
+                <span className="min-w-0 flex-1 truncate text-sm text-slate-300 group-hover:text-white">
+                  {article.title}
+                </span>
+
+                {article.category ? (
+                  <span className="shrink-0 rounded-full border border-white/[0.08] px-2 py-0.5 text-[10px] text-slate-500">
+                    {article.category}
+                  </span>
+                ) : null}
+              </Link>
+            ))}
+          </div>
+        </section>
+      ) : null}
 
       <div className="grid gap-8 xl:grid-cols-3">
 

@@ -1,6 +1,5 @@
 import DashboardHeader from "@/components/dashboard/DashboardHeader";
 import StatsGrid from "@/components/dashboard/StatsGrid";
-import RevenueChart from "@/components/dashboard/charts/RevenueChart";
 import AIInsights from "@/components/dashboard/AIInsights";
 import ActivityFeed from "@/components/dashboard/ActivityFeed";
 import ProjectGrid from "@/components/projects/ProjectGrid";
@@ -17,7 +16,6 @@ export default function DashboardPage() {
 
       <div className="grid gap-5 sm:gap-6 xl:grid-cols-3">
         <div className="min-w-0 space-y-5 sm:space-y-6 xl:col-span-2">
-          <RevenueChart />
           <ProjectGrid />
         </div>
 

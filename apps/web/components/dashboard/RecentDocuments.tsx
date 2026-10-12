@@ -1,41 +1,40 @@
 "use client";
 
 import Link from "next/link";
-import {
-  FileText,
-  FileSpreadsheet,
-  FileImage,
-  MoreHorizontal,
-} from "lucide-react";
+import { useEffect, useState } from "react";
 
-const documents = [
-  {
-    name: "Employee Handbook",
-    type: "PDF",
-    updated: "2 mins ago",
-    icon: FileText,
-  },
-  {
-    name: "Q2 Financial Report",
-    type: "XLSX",
-    updated: "15 mins ago",
-    icon: FileSpreadsheet,
-  },
-  {
-    name: "Product Strategy",
-    type: "DOCX",
-    updated: "1 hour ago",
-    icon: FileText,
-  },
-  {
-    name: "Brand Guidelines",
-    type: "PNG",
-    updated: "3 hours ago",
-    icon: FileImage,
-  },
-];
+import { FileText, Loader2 } from "lucide-react";
+
+import { getDocuments, type Document } from "@/lib/documents";
+import { formatBytes, timeAgo } from "@/lib/format";
 
 export default function RecentDocuments() {
+  const [documents, setDocuments] = useState<Document[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    getDocuments()
+      .then((rows) => {
+        if (!cancelled) {
+          setDocuments(rows.slice(0, 5));
+        }
+      })
+      .catch(() => {
+        /* Handled by the empty state below. */
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setLoading(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   return (
     <section className="rounded-2xl border border-white/[0.07] bg-white/[0.025] p-5 backdrop-blur-xl sm:p-6">
       <div className="mb-5 flex items-center justify-between">
@@ -45,7 +44,7 @@ export default function RecentDocuments() {
           </h2>
 
           <p className="mt-1 text-xs text-slate-600">
-            Recently accessed files
+            Latest uploads in your library
           </p>
         </div>
 
@@ -58,47 +57,44 @@ export default function RecentDocuments() {
       </div>
 
       <div className="space-y-1">
-        {documents.map((document) => {
-          const Icon = document.icon;
-
-          return (
-            <div
-              key={document.name}
+        {loading ? (
+          <div className="flex items-center justify-center gap-2 py-8 text-xs text-slate-500">
+            <Loader2 size={14} className="animate-spin" />
+            Loading documents…
+          </div>
+        ) : documents.length === 0 ? (
+          <div className="py-8 text-center text-xs text-slate-600">
+            No documents yet. Upload one from the Documents
+            page.
+          </div>
+        ) : (
+          documents.map((document) => (
+            <Link
+              key={document.id}
+              href="/workspace/documents"
               className="group flex items-center gap-3 rounded-xl px-2 py-3 transition-colors hover:bg-white/[0.025]"
             >
-              <Link
-                href="/workspace/documents"
-                className="flex min-w-0 flex-1 items-center gap-3"
-              >
-                <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-white/[0.06] bg-white/[0.025]">
-                  <Icon
-                    size={15}
-                    strokeWidth={1.7}
-                    className="text-slate-500 transition-colors group-hover:text-cyan-400"
-                  />
-                </div>
+              <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-white/[0.06] bg-white/[0.025]">
+                <FileText
+                  size={15}
+                  strokeWidth={1.7}
+                  className="text-slate-500 transition-colors group-hover:text-cyan-400"
+                />
+              </div>
 
-                <div className="min-w-0 flex-1">
-                  <p className="truncate text-xs font-medium text-slate-300 group-hover:text-white">
-                    {document.name}
-                  </p>
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-xs font-medium text-slate-300 group-hover:text-white">
+                  {document.title}
+                </p>
 
-                  <p className="mt-1 text-[10px] text-slate-600">
-                    {document.type} · {document.updated}
-                  </p>
-                </div>
-              </Link>
-
-              <button
-                type="button"
-                aria-label={`More options for ${document.name}`}
-                className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-slate-600 opacity-0 transition-all group-hover:opacity-100 hover:bg-white/[0.05] hover:text-slate-300"
-              >
-                <MoreHorizontal size={15} />
-              </button>
-            </div>
-          );
-        })}
+                <p className="mt-1 text-[10px] text-slate-600">
+                  {formatBytes(document.file_size)} ·{" "}
+                  {timeAgo(document.created_at)}
+                </p>
+              </div>
+            </Link>
+          ))
+        )}
       </div>
     </section>
   );

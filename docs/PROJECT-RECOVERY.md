@@ -3,6 +3,9 @@
 > This file is the durable hand-off between development sessions.
 > Update it after every meaningful change so any developer/session can
 > resume without re-reading the whole history.
+>
+> Companion documents: `docs/REQUIREMENTS-STATUS.md` (PRD/SRS traceability)
+> and `docs/DEPLOYMENT.md` (env, migrations, rollback).
 
 ---
 
@@ -10,16 +13,17 @@
 
 | Item | Value |
 |---|---|
-| GitHub | https://github.com/bathriprasathtk-ui/atlas-enterprise-os (`main` = `5b1d249`) |
+| GitHub | https://github.com/bathriprasathk-ui/atlas-enterprise-os (`main` = `5b1d249`) |
 | Working branch | `freebuff/bc445a7e57f24e03cee2b69d` |
 | Base | `main` @ `5b1d249` "feat: sync Atlas Enterprise OS application" |
-| Checkpoint 1 | Commit directly after `5b1d249` on this branch — contains the full, verified **Trusted Data Foundation** milestone (previously uncommitted) |
-| Checkpoint 2 | Commit after checkpoint 1 — contains the full, verified **Semantic Knowledge Retrieval (RAG)** milestone + Docker/CI |
+| Checkpoint 1 | **Trusted Data Foundation** (RLS migration, private storage, signed URLs, real identity) |
+| Checkpoint 2 | **Semantic Knowledge Retrieval (RAG)** + Docker/CI (`3f152da`) |
+| Checkpoint 3 | **Core Product Completion** (this session) — tasks/projects/dashboard/AI/calendar/analytics/team/workflows/settings/integrations/notifications, auth flows, document categories, audit + notification producers, health endpoint, lint debt cleared, docs |
 | Node / npm | v24.21.0 / 11.19.0 |
 | App root | `apps/web/` (Next.js 16.2.11, App Router, React 19, TS strict, Tailwind v4) |
 
-As of this checkpoint, **GitHub contains none of the milestone work** — it existed
-only in this worktree. Push only with explicit user approval.
+**GitHub contains none of the milestone work** — it exists only in this
+worktree. Push only with explicit user approval (CI runs on first push).
 
 ---
 
@@ -27,104 +31,96 @@ only in this worktree. Push only with explicit user approval.
 
 ### A. Trusted Data Foundation (checkpoint 1) — VERIFIED
 
-Makes the real auth → documents → storage → AI flow secure:
+Owner-only RLS on `documents`/`projects`, private storage bucket with
+user-scoped paths (`{userId}/…`), signed URLs everywhere (client 1 h,
+server 5 min), explicit `.eq("uploaded_by", uid)` defense-in-depth,
+route-level 401s, real identity in Topbar/dashboard, `.env.example`.
+**Evidence:** typecheck/build exit 0; two-user RLS test **33/33** on real
+PostgreSQL 18 (mocked Supabase `auth`/`storage` schemas).
 
-1. **`supabase/migrations/0001_init.sql`** (new): `documents` + `projects`
-   tables (UUID PKs, audit fields, ownership FKs → `auth.users`, triggers,
-   indexes), RLS enabled with 4 owner-only policies per table, private
-   `documents` storage bucket (50 MB limit, MIME allowlist) with 4 owner-only
-   path policies (`{userId}/…`), baseline drop of legacy permissive policies,
-   legacy flat-path file relocation. Idempotent.
-2. **Storage security**: user-scoped upload paths
-   `{userId}/{timestamp}-{filename}`; public URLs eliminated everywhere in
-   favor of signed URLs (client 1 h, server 5 min).
-3. **Data layer** (`lib/storage.ts`, `lib/documents.ts`, `lib/projects.ts`):
-   every query explicitly scoped to the authenticated user
-   (`.eq("uploaded_by"/"created_by", uid)` as defense-in-depth on top of RLS);
-   `assertOwnedPath()`; safe unauthenticated handling (no crashes).
-4. **UploadZone.tsx**: auth validation, MIME + 50 MB validation, DB-insert
-   error handling with storage rollback, refresh via `onUploaded` callback
-   (no `window.location.reload()`, no `alert()`).
-5. **DocumentCard.tsx**: preview/download via signed URLs; `alert()` replaced
-   with inline `role="alert"` messages.
-6. **AI route** (`app/api/ai/ask/route.ts`): 401 without session, documents
-   query scoped to caller, PDFs fetched through signed URLs, no user-ID/PII
-   logging, Gemini behavior preserved.
-7. **User identity**: `lib/auth.ts` gains `getCurrentUser()`; Topbar and
-   DashboardHeader show the real authenticated user (no hardcoded names).
-8. **Config**: `apps/web/.env.example` (variable names only), `.gitignore`
-   exception for it, README setup instructions, `typecheck` npm script.
-9. **Dead code**: `apps/web/lib/supabase.ts` (unused third Supabase client)
-   deleted — verified zero importers.
+### B. Semantic Knowledge Retrieval (checkpoint 2) — VERIFIED (static + mocked)
 
-**Verification evidence (this machine):**
-- `npm run typecheck` → exit 0
-- `npm run build` (placeholder env) → exit 0, 19/19 pages, zero errors
-- `npm run lint` → exit 1, 11 problems — **all pre-existing** (baseline was
-  12; milestone fixed one and introduced none). Flagged files are untouched
-  except `knowledge/page.tsx` whose error is at an unchanged line.
-- **Two-user RLS test: 33/33 PASS** on real PostgreSQL 18 (embedded, with
-  mocked Supabase `auth`/`storage` schemas): user B cannot read/update/delete
-  or spoof-own user A's documents/projects/storage; anon gets 0 rows; ownerless
-  legacy files inaccessible; migration idempotent. (Harness in `/tmp/rlstest/`
-  — session-only, not committed.)
-- No secrets anywhere in diffs; no `.env.local`; no tracked `.env` files.
+`0002_embeddings.sql` (`document_chunks`, `vector(768)`, HNSW,
+`match_document_chunks()` RLS-inlined), `lib/chunking.ts` (6 tests),
+`lib/embeddings.ts` (9 mocked tests), `lib/rag.ts`, ingest/search/ask
+routes (auth → signed-URL PDF → chunk → embed → store; top-k retrieval;
+semantic search with silent fallback), real "AI Indexed" badge +
+Re-index, multi-stage Dockerfile + `.dockerignore`, GitHub Actions CI,
+`node --test` harness. **Evidence:** 15/15 tests, typecheck/build exit 0.
+`0002` still **unapplied** (needs pgvector on the target project).
 
-### B. Semantic Knowledge Retrieval — Milestone 2 — VERIFIED (static + mocked)
+### C. Core Product Completion (checkpoint 3) — VERIFIED
 
-Real pgvector RAG over the private document store:
+Turns the mock UI into a working product; every visible control now
+does something real (or was honestly relabelled/removed):
 
-1. **`supabase/migrations/0002_embeddings.sql`** (new): `document_chunks`
-   (UUID PK, `document_id` FK cascade, `uploaded_by` → `auth.users`,
-   `chunk_index`, `content`, `embedding vector(768)`, unique
-   (document, chunk_index), HNSW cosine index), RLS enabled with 4
-   owner-only policies (baseline drop of any pre-existing policies),
-   `match_document_chunks(query_embedding, match_count, min_similarity)`
-   written in `language sql` so the body is **inlined** into the caller's
-   query — RLS applies, plus an explicit `uploaded_by = auth.uid()` filter;
-   `execute` granted to `authenticated` only, revoked from `anon`/`public`.
-   Requires the `pgvector` extension (enable in Supabase → Extensions).
-   Idempotent. **UNAPPLIED to any hosted database.**
-2. **`lib/chunking.ts`** (new): paragraph-packed, sentence-aware,
-   word-boundary chunking — 1,600-char target, 200-char overlap trimmed to
-   the room available so no chunk ever exceeds the bound. 6 unit tests.
-3. **`lib/embeddings.ts`** (new): `gemini-embedding-2` via plain
-   `batchEmbedContents` fetch, `outputDimensionality: 768` (matches
-   `vector(768)`), 20-per-batch, API key server-side only,
-   `EmbeddingError` with HTTP status, strict shape checks. 9 unit tests
-   (mocked fetch — no network).
-4. **`lib/rag.ts`** (new): `findRelevantChunks()` (embed query → RPC
-   `match_document_chunks`) + `countUserChunks()`.
-5. **`lib/routeAuth.ts`** (new): shared route auth helper
-   (Bearer token → Supabase session user).
-6. **`app/api/documents/ingest/route.ts`** (new): auth → ownership check →
-   download PDF via **signed URL** → `lib/pdf.ts` text extraction → chunk →
-   embed → replace `document_chunks` rows atomically. Auto-triggered after
-   every upload (UploadZone) and manually via the **Re-index** button.
-7. **`app/api/ai/ask/route.ts`** (reworked): top-k chunk retrieval with
-   similarity floor; whole-PDF concatenation only as legacy fallback when
-   nothing is indexed. Same Gemini model/params, no PII logging.
-8. **`app/api/knowledge/search/route.ts`** (new) + Knowledge Hub search UI:
-   debounced semantic search (own documents only) with silent fallback to
-   the classic title filter when the embedding service is down.
-9. **DocumentCard**: "AI Indexed" badge now reflects **real** index state
-   (`document_chunks` count, RLS-scoped) instead of being hardcoded; new
-   Re-index action with inline errors/status (no `alert()`/`reload()`).
-10. **Docker + CI**: `apps/web/Dockerfile` (multi-stage, node:20-alpine,
-    standalone output — `next.config.ts` now sets `output: "standalone"`),
-    `apps/web/.dockerignore`, `.github/workflows/ci.yml` (blocking
-    typecheck + 15 unit tests + production build; lint non-blocking until
-    pre-existing debt is cleared; docker-build job validates the image on
-    GitHub's runner since the sandbox has no usable Docker daemon).
-11. **Unit-test infra**: `npm test` → `node --test` on
-    `lib/__tests__/*.test.ts` (15/15 pass; no new test framework added).
+**Schema** — `0003_core.sql`: tasks, notifications, ai_conversations,
+audit_logs, workflows + workflow_runs, profiles (auto-created by
+trigger, backfilled) — RLS owner-only, project-ownership trigger.
+`0004_document_categories.sql`: `documents.category`.
+
+**Data layers** — `lib/tasks.ts`, `lib/notifications.ts`, `lib/profiles.ts`,
+`lib/aiConversations.ts`, `lib/workflows.ts`, `lib/audit.ts` (+ server-only
+`lib/auditServer.ts`), `lib/format.ts`, `lib/workflowValidation.ts`;
+all queries explicitly user-scoped on top of RLS.
+
+**Pages wired to real data** — Tasks (CRUD, filters, stats, due dates),
+Projects (status update, progress, delete; fake "members" removed),
+Dashboard (real stats, real activity feed, honest AI insights, fake
+revenue chart deleted), AI chat (real `/api/ai/ask` + persisted history +
+typing/error states), Calendar (real task/project dates), Analytics
+(computed from real rows; `Date.now()` moved out of render), Team
+(profiles directory), Workflows (create/pause/delete + **real runner**
+`POST /api/workflows/run` with timeout and honest success/failure runs),
+Settings (real profile edit, password change, honest security copy),
+Integrations (live `/api/integrations` status — configured vs
+**not_implemented**, never fake "Connected").
+
+**Notifications** — Topbar bell reads real rows (unread badge, mark
+read/mark all, empty + error states, 60 s refresh); producers wired:
+workflow runs insert notifications when they surface actionable items;
+every task/project/document/workflow/profile mutation writes
+`audit_logs` (client) and ingest/workflow-run write them server-side.
+
+**Auth & entry points** — `/login` now has real sign-up, sign-in and
+password-reset modes (the two fake "available soon" buttons and the
+non-functional "Remember me" checkbox were replaced); new
+`/reset-password` page does the PKCE code exchange and sets a new
+password; middleware still guards `/workspace/*`.
+
+**Search** — top-bar search box now deep-links to
+`/workspace/knowledge?q=…`, and the Knowledge Hub reads `?q=` on mount.
+
+**Document categories** — preset picker at upload, working filter chips
+derived from real data (the old chips were decorative), `category`
+validated 1–60 chars.
+
+**Platform/ops** — lazy Supabase browser client (transparent Proxy, no
+module-level side effect → `next build` works without env);
+`lib/auditServer.ts` + `lib/workflowValidation.ts` split so API routes
+never execute browser-only code; `GET /api/health` (booleans only, no
+secrets) + Docker `HEALTHCHECK`; docs: `REQUIREMENTS-STATUS.md`,
+`DEPLOYMENT.md` (this file updated).
+
+**Evidence (all re-run fresh after the final change):**
+
+| Check | Result |
+|---|---|
+| `npm test` | **53/53 pass** (was 15; +format/tasks/workflows/profiles suites) |
+| `npm run typecheck` | exit 0 |
+| `npx eslint .` | **0 problems** (baseline of 16 cleared — no suppressions) |
+| `npm run build` | exit 0, 24/24 pages, **without any env vars present** |
+| PostgreSQL 18 harness | `0003` **31/31**; `0004` **13/13** (constraints, two-user isolation, spoofed `created_by` rejected, idempotency) |
+| Secrets | none in diffs/tracked files; no `.env.local` |
 
 ---
 
 ## 3. Current task
 
-Milestone 2 (Semantic Knowledge Retrieval) is COMPLETE and committed as
-checkpoint 2, pending user review. Next milestone is user-selected (§5).
+Checkpoint 3 (Core Product Completion) is complete and committed locally.
+Nothing is pushed. Remaining work is either external (§4) or
+user-selected (§5); status of every PRD/SRS requirement is tracked in
+`docs/REQUIREMENTS-STATUS.md`.
 
 ---
 
@@ -132,28 +128,32 @@ checkpoint 2, pending user review. Next milestone is user-selected (§5).
 
 | Blocker | Impact | Workaround |
 |---|---|---|
-| **No Supabase project/credentials** in sandbox | Cannot live-test auth, RLS, Storage API, signed URLs | Verified statically + on local Postgres with mocked Supabase schemas. User must run `supabase db push` + two-account browser test (see §9) |
-| **No GEMINI_API_KEY** | Cannot exercise live Gemini chat/embeddings | Route code verified statically; 9 unit tests mock `fetch` |
-| **No Docker in sandbox** | Docker image cannot be built/tested here | Dockerfile written to spec; `docker` CI job will build it on GitHub — locally unverified |
-| **Pre-existing lint debt** | `npm run lint` exits 1 (11 problems) | Pre-existing in untouched files; NOT suppressed. Fix in cleanup milestone |
-| **42 zero-byte placeholder files** | Dead weight; some represent unbuilt features | Analysis in §6; removal deferred to an approved cleanup milestone |
-| **Stray root `package.json` + `services/*.ts` (empty)** | Confusing; root lockfile broken | Deferred (architecture cleanup) |
+| **No Supabase project/credentials** in sandbox | Cannot live-test auth, signup/reset emails, Storage API, RLS through the app | Verified on local PostgreSQL 18 with mocked Supabase schemas; user runs §9 checklist |
+| **No GEMINI_API_KEY** | Cannot exercise live chat/embeddings | Routes return explicit 503; 9 unit tests mock `fetch` |
+| **No Docker in sandbox** | Image not built here | Dockerfile + HEALTHCHECK written; the `docker` CI job builds it on GitHub |
+| **`0002` (pgvector) unapplied/unverified** | Semantic search dead until applied | Apply on target project (§9); pgvector is standard on Supabase |
+| **Lint debt** | — | **CLEARED**: `npx eslint .` → 0 problems (CI lint can be made blocking) |
+| **42 zero-byte placeholder files** | Dead weight (all unused, zero importers) | Analysis in §6; removal deferred to an approved cleanup |
+| Next 16 `middleware` deprecation warning | Cosmetic today | Rename `middleware.ts` → `proxy.ts` on next upgrade (see DEPLOYMENT §9) |
 
 ---
 
 ## 5. Outstanding tasks (priority order)
 
-1. **Live verification on real Supabase (§9)** — apply `0001`+`0002`,
-   enable `pgvector`, run the two-account test, then an end-to-end
-   upload → Re-index → semantic search → AI question pass.
-2. Real dashboard data (documents/projects counts from DB instead of mock)
-3. AI chat page wired to the ask route (check current state first)
-4. Knowledge graph / related-document edges (needs user-approved design)
-5. Cleanup milestone (user-approved): remove unused zero-byte files, stray
-   root package.json/services dir, unify workspace shells, clear the 11
-   pre-existing lint findings so CI lint can become blocking
-6. Extend `node --test` coverage (path security, validation) as new lib
-   logic lands — vitest only if the suite outgrows the runner
+1. **Live verification on real Supabase (§9)** — apply `0001→0004`, enable
+   `pgvector`, configure SMTP, two-account browser test, live Gemini pass.
+2. **Push + PR (user approval required)** — CI will then run
+   typecheck/tests/build + Docker build on GitHub.
+3. **Collaboration milestone (largest PRD gap, see REQUIREMENTS-STATUS §3.9.8)**
+   — shared workspaces, orgs/departments, roles, comments/chat. Requires a
+   product-approved multi-tenant design; current RLS is deliberately
+   owner-only.
+4. **Knowledge articles + versions** (REQ-KB-001/002, Database-Design §5.7).
+5. **MFA/SSO + email notifications** — need identity provider / email
+   service choices (external).
+6. **Cleanup milestone (user-approved)** — remove zero-byte files, stray
+   root `package.json`/`services/`, make CI lint blocking (now feasible).
+7. **Knowledge Graph** — v2.0 per PRD §12; do not fake in v1.
 
 ---
 
@@ -165,12 +165,12 @@ Grouped by intent (from docs/design):
   data-access layer; superseded by `lib/*.ts`; implement only if UI needs them
 - `types/*` (auth, document, project, task, team, user, workflow) — planned
   shared types; partially superseded by inline types in `lib/*.ts`
-- `components/ai/*` (chat set) — planned AI assistant UI (product requirement;
-  to be implemented for real, not just deleted)
+- `components/ai/*` (chat set) — planned AI assistant UI (the assistant now
+  lives in `app/workspace/ai/page.tsx`; these are candidates for deletion)
 - `components/auth/*` (LoginCard, LoginHero, SocialLogin) — login page works
   without them; social login deferred (needs Supabase OAuth config)
 - `components/dashboard/Dashboard.tsx` + landing components — dashboard page
-  currently renders its own real-header + mock cards; to be made real
+  renders its own real header; candidates for deletion
 - 8 UI primitives (Modal, Toast, Dropdown, Search, Loader, Avatar, Badge) —
   reusable; implement on first real use
 - root `services/*.ts` (6 files) — planned FastAPI layer; empty and unused
@@ -180,43 +180,51 @@ Grouped by intent (from docs/design):
 ## 7. Verification commands (run from `apps/web/`)
 
 ```bash
-npm ci                    # (note: lockfile was repaired by npm install — see checkpoint)
+npm ci                    # install from lockfile
 npm run typecheck         # tsc --noEmit — MUST be exit 0
-npm run lint              # eslint — currently exits 1 on PRE-EXISTING issues
-npm run build             # needs Supabase env vars; placeholders OK for compile
+npx eslint .              # MUST be 0 problems
+npm test                  # node --test — 53/53 expected
+npm run build             # exit 0 WITHOUT env vars (lazy Supabase client)
+npm run start             # serve production build on :3000
+curl localhost:3000/api/health   # {"status":"ok",...}
 ```
 
-RLS harness (session-only): `/tmp/rlstest/rls-test.js` with
-`node rls-test.js` — 33 assertions against embedded PostgreSQL 18.
+PostgreSQL migration harness (session-only, in `/tmp/pgharness/`):
+`node test0004.mjs` → 13/13 (applies `0001`, `0003`, `0004` to embedded
+PostgreSQL 18 with mocked `auth`/`storage` schemas).
 
 ---
 
 ## 8. Exact next steps (for the next session)
 
-1. `git log` to confirm checkpoint 2 is HEAD; read this file.
-2. Ask the user to pick the next milestone (candidates in §5). Push +
-   open a PR only with explicit approval — CI (§2.B.10) will then
-   validate typecheck/tests/build and the Dockerfile on GitHub.
-3. When the user has a real Supabase project: follow §9 (migrations,
-   pgvector extension, two-account test, live Gemini pass).
-4. Update §2/§3/§5 of this file as you go.
-5. Do not touch: PRD/SRS/architecture docs (unless fixing factual drift),
-   placeholder files (until approved), unrelated mock modules (tasks, team,
-   analytics, workflows, calendar, integrations).
+1. `git log` to confirm checkpoint 3 is HEAD; read this file.
+2. Push only with explicit approval — CI validates everything on GitHub.
+3. When the user has a real Supabase project: follow §9, then the
+   post-deploy checklist in `docs/DEPLOYMENT.md` §7.
+4. Pick the next milestone from §5; update §2/§3/§5 of this file as you go.
+5. Keep `docs/REQUIREMENTS-STATUS.md` in sync with any new requirement work.
 
 ---
 
 ## 9. What requires a real Supabase environment (user actions)
 
-1. Create a Supabase project; copy URL + publishable key into
-   `apps/web/.env.local` (see `apps/web/.env.example`), plus a Gemini key.
-2. Apply migrations: `supabase db push` (or paste `supabase/migrations/*.sql`
-   into the SQL editor, in filename order).
-3. Two-account security test: sign in as A → upload PDF; sign in as B (fresh
-   browser/incognito) → confirm Knowledge Hub shows nothing of A's and that
-   A's signed URL is inaccessible. Sign back in as A → preview/download work.
-4. Set `GEMINI_API_KEY` server-side only; test `/workspace/ai` question.
+1. Create a Supabase project; put URL + publishable key in
+   `apps/web/.env.local` (template: `apps/web/.env.example`), plus a
+   Gemini key in `GEMINI_API_KEY`.
+2. Apply migrations **in filename order** (`0001`, `0002`, `0003`, `0004`);
+   confirm `vector` extension is enabled before `0002`
+   (`supabase db push` or SQL editor).
+3. Configure Auth SMTP + Site URL so signup confirmation and password
+   reset emails deliver (reset link targets `/reset-password`).
+4. Two-account security test (incognito for B): A uploads a PDF and
+   creates a task/project; B sees an empty Knowledge Hub, Tasks,
+   Projects, Analytics and notifications — and cannot open A's signed
+   URL. Sign back in as A → everything still there.
+5. Set `GEMINI_API_KEY` server-side only; verify `/workspace/ai`
+   answers with sources; remove it temporarily → verify the honest 503.
+6. Run `docs/DEPLOYMENT.md` §7 post-deploy checklist on the real origin
+   (includes the signup/reset email flows).
 
 ---
 
-*Last updated: milestone 2 complete — checkpoint 2.*
+*Last updated: checkpoint 3 (Core Product Completion) complete.*

@@ -29,10 +29,10 @@ const actions = [
     href: "/workspace/ai",
   },
   {
-    title: "Create document",
-    description: "Start from scratch",
+    title: "New task",
+    description: "Track a piece of work",
     icon: FilePlus2,
-    href: "/workspace/documents",
+    href: "/workspace/tasks",
   },
 ];
 

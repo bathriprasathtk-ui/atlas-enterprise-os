@@ -1,3 +1,5 @@
+import Link from "next/link";
+
 export default function HeroSection() {
   return (
     <section className="max-w-xl">
@@ -37,7 +39,7 @@ export default function HeroSection() {
 
       {/* Back */}
       <div className="mt-9">
-        <a
+        <Link
           href="/"
           className="group inline-flex items-center gap-3 rounded-xl bg-gradient-to-r from-blue-600 via-cyan-500 to-violet-500 px-6 py-3.5 text-sm font-semibold text-white shadow-lg shadow-blue-500/20 transition duration-300 hover:-translate-y-0.5 hover:shadow-cyan-500/25"
         >
@@ -46,7 +48,7 @@ export default function HeroSection() {
           <span className="transition-transform duration-300 group-hover:translate-x-1">
             →
           </span>
-        </a>
+        </Link>
       </div>
     </section>
   );

@@ -50,7 +50,6 @@ export default function AnimatedCounter({
       }
     };
 
-    setCount(0);
     animationFrame =
       requestAnimationFrame(animate);
 

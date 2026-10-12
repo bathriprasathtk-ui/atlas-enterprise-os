@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 
 import FadeIn from "@/components/animations/FadeIn";
-import { CalendarDays, Sparkles } from "lucide-react";
+import { Sparkles } from "lucide-react";
 
 import {
   getCurrentUser,
@@ -62,16 +62,7 @@ export default function DashboardHeader() {
           </p>
         </div>
 
-        <button
-          type="button"
-          className="flex h-10 w-fit items-center gap-2 rounded-xl border border-white/[0.07] bg-white/[0.025] px-3.5 text-sm text-slate-400 transition-all duration-200 hover:border-white/[0.12] hover:bg-white/[0.04] hover:text-white"
-        >
-          <CalendarDays size={16} strokeWidth={1.7} />
 
-          <span>Last 30 days</span>
-
-          <span className="ml-1 text-slate-600">⌄</span>
-        </button>
       </div>
     </FadeIn>
   );

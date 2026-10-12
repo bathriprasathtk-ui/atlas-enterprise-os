@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import KnowledgeHeader from "@/components/knowledge/KnowledgeHeader";
 import SearchBar from "@/components/knowledge/SearchBar";
@@ -16,6 +16,7 @@ import {
 export default function DocumentsPage() {
   const [documents, setDocuments] = useState<Document[]>([]);
   const [search, setSearch] = useState("");
+  const [category, setCategory] = useState("All");
   const [loading, setLoading] = useState(true);
 
   async function loadDocuments() {
@@ -36,13 +37,29 @@ export default function DocumentsPage() {
   }
 
   useEffect(() => {
-    loadDocuments();
+    // Deferred so no state update runs synchronously in the effect.
+    void Promise.resolve().then(loadDocuments);
   }, []);
 
-  const filteredDocuments = documents.filter((document) =>
-    document.title
-      .toLowerCase()
-      .includes(search.toLowerCase())
+  const categories = useMemo(() => {
+    const names = new Set<string>();
+
+    for (const document of documents) {
+      if (document.category) {
+        names.add(document.category);
+      }
+    }
+
+    return [...names].sort();
+  }, [documents]);
+
+  const filteredDocuments = documents.filter(
+    (document) =>
+      document.title
+        .toLowerCase()
+        .includes(search.toLowerCase()) &&
+      (category === "All" ||
+        document.category === category)
   );
 
   return (
@@ -58,7 +75,11 @@ export default function DocumentsPage() {
       />
 
       {/* Filters */}
-      <CategoryFilter />
+      <CategoryFilter
+        categories={categories}
+        active={category}
+        onSelect={setCategory}
+      />
 
       {/* Documents */}
       <div className="grid gap-6 xl:grid-cols-3">

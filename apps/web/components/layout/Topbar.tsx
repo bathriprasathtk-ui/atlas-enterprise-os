@@ -1,6 +1,12 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import { useRouter } from "next/navigation";
 import {
   Bell,
@@ -18,6 +24,16 @@ import {
   signOut,
   type CurrentUser,
 } from "@/lib/auth";
+import {
+  getBadgePrefServerSnapshot,
+  getBadgePrefSnapshot,
+  getNotifications,
+  markAllNotificationsRead,
+  markNotificationRead,
+  subscribeToBadgePref,
+  type AppNotification,
+} from "@/lib/notifications";
+import { timeAgo } from "@/lib/format";
 
 export default function Topbar() {
   const router = useRouter();
@@ -31,6 +47,24 @@ export default function Topbar() {
   const [profileOpen, setProfileOpen] = useState(false);
   const [notificationsOpen, setNotificationsOpen] = useState(false);
   const [loading, setLoading] = useState(false);
+
+  // Real notifications (RLS-scoped to the signed-in user)
+  const [notifications, setNotifications] = useState<
+    AppNotification[] | null
+  >(null);
+  const [notifLoading, setNotifLoading] = useState(false);
+  const [notifBusy, setNotifBusy] = useState(false);
+  const [notifError, setNotifError] = useState<string | null>(
+    null
+  );
+
+  /* Badge preference lives in localStorage; the hook keeps the
+     bell in sync with the Settings toggle. */
+  const badgeEnabled = useSyncExternalStore(
+    subscribeToBadgePref,
+    getBadgePrefSnapshot,
+    getBadgePrefServerSnapshot
+  );
 
   // Authenticated user identity
   const [currentUser, setCurrentUser] =
@@ -120,6 +154,97 @@ export default function Topbar() {
     };
   }, []);
 
+  const unreadCount =
+    notifications?.filter((item) => !item.is_read).length ?? 0;
+
+  const refreshNotifications =
+    useCallback(async (): Promise<void> => {
+      setNotifLoading(true);
+      setNotifError(null);
+
+      try {
+        const items = await getNotifications(20);
+        setNotifications(items);
+      } catch (err) {
+        setNotifError(
+          err instanceof Error
+            ? err.message
+            : "Could not load notifications."
+        );
+      } finally {
+        setNotifLoading(false);
+      }
+    }, []);
+
+  // Load on mount and refresh every 60s. The initial call is
+  // deferred so no state update runs synchronously in the effect.
+  useEffect(() => {
+    void Promise.resolve().then(refreshNotifications);
+
+    const interval = window.setInterval(() => {
+      void refreshNotifications();
+    }, 60000);
+
+    return () => {
+      window.clearInterval(interval);
+    };
+  }, [refreshNotifications]);
+
+  async function handleMarkAllRead(): Promise<void> {
+    if (notifBusy || unreadCount === 0) return;
+
+    setNotifBusy(true);
+    setNotifError(null);
+
+    try {
+      await markAllNotificationsRead();
+      setNotifications(
+        (current) =>
+          current?.map((item) => ({
+            ...item,
+            is_read: true,
+          })) ?? null
+      );
+    } catch (err) {
+      setNotifError(
+        err instanceof Error
+          ? err.message
+          : "Could not update notifications."
+      );
+    } finally {
+      setNotifBusy(false);
+    }
+  }
+
+  async function handleMarkRead(
+    id: string
+  ): Promise<void> {
+    if (notifBusy) return;
+
+    const previous = notifications;
+
+    // Optimistic update
+    setNotifications(
+      (current) =>
+        current?.map((item) =>
+          item.id === id
+            ? { ...item, is_read: true }
+            : item
+        ) ?? null
+    );
+
+    try {
+      await markNotificationRead(id);
+    } catch (err) {
+      setNotifications(previous);
+      setNotifError(
+        err instanceof Error
+          ? err.message
+          : "Could not update that notification."
+      );
+    }
+  }
+
   // Sign out
   async function handleSignOut() {
     if (loading) return;
@@ -153,9 +278,22 @@ export default function Topbar() {
       ref={searchRef}
       type="search"
       placeholder="Search anything..."
+      aria-label="Search the Knowledge Hub"
       onKeyDown={(event) => {
         if (event.key === "Escape") {
           event.currentTarget.blur();
+          return;
+        }
+
+        if (event.key === "Enter") {
+          const query = event.currentTarget.value.trim();
+
+          if (query) {
+            event.currentTarget.blur();
+            router.push(
+              `/workspace/knowledge?q=${encodeURIComponent(query)}`
+            );
+          }
         }
       }}
       className="h-11 w-full rounded-xl border border-white/[0.07] bg-white/[0.025] pl-11 pr-24 text-sm text-white outline-none transition-all duration-200 placeholder:text-slate-600 hover:border-white/[0.11] hover:bg-white/[0.035] focus:border-cyan-400/30 focus:bg-white/[0.04] focus:ring-1 focus:ring-cyan-400/10"
@@ -197,9 +335,15 @@ export default function Topbar() {
             onClick={() => {
               setProfileOpen(false);
 
-              setNotificationsOpen(
-                (current) => !current
-              );
+              setNotificationsOpen((current) => {
+                const next = !current;
+
+                if (next) {
+                  void refreshNotifications();
+                }
+
+                return next;
+              });
             }}
             className={`group relative flex h-10 w-10 items-center justify-center rounded-xl border text-slate-400 transition-all duration-200 ${
               notificationsOpen
@@ -217,8 +361,13 @@ export default function Topbar() {
               }
             />
 
-            {/* Unread indicator */}
-            <span className="absolute right-[9px] top-[8px] h-1.5 w-1.5 rounded-full bg-cyan-400 shadow-[0_0_8px_rgba(34,211,238,0.8)]" />
+            {/* Unread indicator (hidden when disabled or read) */}
+            {badgeEnabled && unreadCount > 0 && (
+              <span
+                aria-label={`${unreadCount} unread notifications`}
+                className="absolute right-[9px] top-[8px] h-1.5 w-1.5 rounded-full bg-cyan-400 shadow-[0_0_8px_rgba(34,211,238,0.8)]"
+              />
+            )}
           </button>
 
           {/* Notification dropdown */}
@@ -234,100 +383,119 @@ export default function Topbar() {
                   </p>
 
                   <p className="mt-0.5 text-[11px] text-slate-500">
-                    Recent workspace activity
+                    {unreadCount > 0
+                      ? `${unreadCount} unread`
+                      : notifications && notifications.length > 0
+                        ? "All caught up"
+                        : "Recent workspace activity"}
                   </p>
                 </div>
 
                 <button
                   type="button"
-                  onClick={() => {}}
-                  className="text-[11px] font-medium text-cyan-400 transition-colors hover:text-cyan-300"
+                  onClick={handleMarkAllRead}
+                  disabled={notifBusy || unreadCount === 0}
+                  className="text-[11px] font-medium text-cyan-400 transition-colors hover:text-cyan-300 disabled:cursor-not-allowed disabled:text-slate-600"
                 >
-                  Mark all read
+                  {notifBusy ? "Saving..." : "Mark all read"}
                 </button>
 
               </div>
 
-              {/* Notifications */}
+              {/* List */}
               <div className="max-h-[320px] overflow-y-auto">
 
-                {/* Notification 1 */}
-                <div className="flex gap-3 border-b border-white/[0.05] px-4 py-3.5 transition-colors hover:bg-white/[0.025]">
-
-                  <div className="mt-0.5 h-2 w-2 shrink-0 rounded-full bg-cyan-400 shadow-[0_0_8px_rgba(34,211,238,0.6)]" />
-
-                  <div className="min-w-0">
-
-                    <p className="text-xs font-medium text-slate-200">
-                      Knowledge activity increased
-                    </p>
-
-                    <p className="mt-1 text-[11px] leading-4 text-slate-500">
-                      Your team added new documents to the Knowledge Hub.
-                    </p>
-
-                    <p className="mt-1.5 text-[10px] text-slate-600">
-                      12 minutes ago
-                    </p>
-
+                {/* Loading skeleton */}
+                {notifLoading && notifications === null && (
+                  <div className="space-y-3 p-4" aria-busy="true">
+                    {[0, 1, 2].map((index) => (
+                      <div
+                        key={index}
+                        className="h-10 animate-pulse rounded-lg bg-white/[0.03]"
+                      />
+                    ))}
                   </div>
-                </div>
+                )}
 
-                {/* Notification 2 */}
-                <div className="flex gap-3 border-b border-white/[0.05] px-4 py-3.5 transition-colors hover:bg-white/[0.025]">
-
-                  <div className="mt-0.5 h-2 w-2 shrink-0 rounded-full bg-violet-400" />
-
-                  <div className="min-w-0">
-
-                    <p className="text-xs font-medium text-slate-200">
-                      AI insight generated
+                {/* Error */}
+                {notifError && (
+                  <div className="border-b border-white/[0.05] px-4 py-3">
+                    <p className="text-[11px] text-amber-400">
+                      {notifError}
                     </p>
-
-                    <p className="mt-1 text-[11px] leading-4 text-slate-500">
-                      Atlas AI found a new workspace trend.
-                    </p>
-
-                    <p className="mt-1.5 text-[10px] text-slate-600">
-                      34 minutes ago
-                    </p>
-
                   </div>
-                </div>
+                )}
 
-                {/* Notification 3 */}
-                <div className="flex gap-3 px-4 py-3.5 transition-colors hover:bg-white/[0.025]">
+                {/* Empty state */}
+                {!notifLoading &&
+                  notifications !== null &&
+                  notifications.length === 0 && (
+                    <div className="px-4 py-6 text-center">
+                      <p className="text-xs text-slate-500">
+                        You&apos;re all caught up.
+                      </p>
 
-                  <div className="mt-0.5 h-2 w-2 shrink-0 rounded-full bg-emerald-400" />
+                      <p className="mt-1 text-[11px] text-slate-600">
+                        Notifications appear here when tasks,
+                        documents or workflows need attention.
+                      </p>
+                    </div>
+                  )}
 
-                  <div className="min-w-0">
+                {/* Items */}
+                {notifications?.map((item) => {
+                  const dotColor =
+                    item.notification_type === "task"
+                      ? "bg-amber-400"
+                      : item.notification_type === "workflow"
+                        ? "bg-violet-400"
+                        : item.notification_type === "document"
+                          ? "bg-emerald-400"
+                          : item.notification_type === "ai"
+                            ? "bg-sky-400"
+                            : "bg-cyan-400";
 
-                    <p className="text-xs font-medium text-slate-200">
-                      Project updated
-                    </p>
+                  return (
+                    <button
+                      key={item.id}
+                      type="button"
+                      onClick={() => {
+                        if (!item.is_read) {
+                          void handleMarkRead(item.id);
+                        }
+                      }}
+                      className="flex w-full gap-3 border-b border-white/[0.05] px-4 py-3.5 text-left transition-colors hover:bg-white/[0.025]"
+                    >
+                      <div
+                        className={`mt-1.5 h-2 w-2 shrink-0 rounded-full ${
+                          item.is_read
+                            ? "bg-white/[0.15]"
+                            : `${dotColor} shadow-[0_0_8px_rgba(34,211,238,0.4)]`
+                        }`}
+                      />
 
-                    <p className="mt-1 text-[11px] leading-4 text-slate-500">
-                      Atlas Enterprise OS progress reached 72%.
-                    </p>
+                      <div className="min-w-0">
+                        <p
+                          className={`text-xs ${
+                            item.is_read
+                              ? "font-normal text-slate-400"
+                              : "font-medium text-slate-200"
+                          }`}
+                        >
+                          {item.title}
+                        </p>
 
-                    <p className="mt-1.5 text-[10px] text-slate-600">
-                      1 hour ago
-                    </p>
+                        <p className="mt-1 break-words text-[11px] leading-4 text-slate-500">
+                          {item.message}
+                        </p>
 
-                  </div>
-                </div>
-
-              </div>
-
-              {/* Footer */}
-              <div className="border-t border-white/[0.06] p-2">
-
-                <button
-                  type="button"
-                  className="w-full rounded-xl px-3 py-2 text-xs font-medium text-slate-500 transition-colors hover:bg-white/[0.04] hover:text-white"
-                >
-                  View all notifications
-                </button>
+                        <p className="mt-1.5 text-[10px] text-slate-600">
+                          {timeAgo(item.created_at)}
+                        </p>
+                      </div>
+                    </button>
+                  );
+                })}
 
               </div>
 

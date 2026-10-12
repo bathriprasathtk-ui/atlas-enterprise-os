@@ -1,4 +1,5 @@
-import { supabase } from "./supabaseClient";
+import { logAuditClient } from "./audit.ts";
+import { supabase } from "./supabaseClient.ts";
 
 export type ProjectStatus =
   | "Active"
@@ -96,6 +97,12 @@ export async function createProject(
     throw error;
   }
 
+  await logAuditClient({
+    action: "project.create",
+    entity: "project",
+    entityId: data.id,
+  });
+
   return data;
 }
 
@@ -128,6 +135,12 @@ export async function updateProject(
     throw error;
   }
 
+  await logAuditClient({
+    action: "project.update",
+    entity: "project",
+    entityId: data.id,
+  });
+
   return data;
 }
 
@@ -152,4 +165,10 @@ export async function deleteProject(
   if (error) {
     throw error;
   }
+
+  await logAuditClient({
+    action: "project.delete",
+    entity: "project",
+    entityId: id,
+  });
 }

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 
 import ProjectGrid from "@/components/projects/ProjectGrid";
 import CreateProjectModal from "@/components/projects/CreateProjectModal";
@@ -28,7 +28,7 @@ export default function ProjectsPage() {
           </h1>
 
           <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-500">
-            Manage your organization's active initiatives,
+            Manage your organization&apos;s active initiatives,
             track progress, and keep teams aligned.
           </p>
         </div>

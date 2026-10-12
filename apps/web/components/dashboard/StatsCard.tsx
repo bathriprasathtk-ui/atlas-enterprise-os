@@ -1,31 +1,18 @@
-import {
-  Users,
-  Sparkles,
-  FileText,
-  FolderKanban,
-  TrendingUp,
-} from "lucide-react";
+import type { LucideIcon } from "lucide-react";
 
 type StatsCardProps = {
   title: string;
   value: string;
-  change: string;
-};
-
-const icons = {
-  Users,
-  "AI Requests": Sparkles,
-  "Knowledge Docs": FileText,
-  "Active Projects": FolderKanban,
+  hint: string;
+  icon: LucideIcon;
 };
 
 export default function StatsCard({
   title,
   value,
-  change,
+  hint,
+  icon: Icon,
 }: StatsCardProps) {
-  const Icon = icons[title as keyof typeof icons] ?? TrendingUp;
-
   return (
     <div className="group relative h-full overflow-hidden rounded-2xl border border-white/[0.07] bg-white/[0.025] p-5 backdrop-blur-xl transition-all duration-300 hover:-translate-y-0.5 hover:border-cyan-400/20 hover:bg-white/[0.035] hover:shadow-[0_12px_40px_rgba(0,0,0,0.18)]">
       {/* Ambient glow */}
@@ -41,11 +28,6 @@ export default function StatsCard({
               className="text-slate-400 transition-colors duration-300 group-hover:text-cyan-400"
             />
           </div>
-
-          <span className="inline-flex items-center gap-1 rounded-full border border-emerald-400/10 bg-emerald-400/[0.06] px-2 py-1 text-[10px] font-medium text-emerald-400">
-            <TrendingUp size={11} />
-            {change}
-          </span>
         </div>
 
         {/* Value */}
@@ -63,9 +45,7 @@ export default function StatsCard({
         <div className="mt-auto pt-4">
           <div className="h-px w-full bg-white/[0.05]" />
 
-          <p className="mt-3 text-[11px] text-slate-600">
-            Compared with last month
-          </p>
+          <p className="mt-3 text-[11px] text-slate-600">{hint}</p>
         </div>
       </div>
     </div>

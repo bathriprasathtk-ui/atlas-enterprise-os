@@ -1,4 +1,4 @@
-import { supabase } from "./supabaseClient";
+import { supabase } from "./supabaseClient.ts";
 
 export async function signIn(
   email: string,
@@ -12,6 +12,35 @@ export async function signIn(
 
 export async function signOut() {
   return supabase.auth.signOut();
+}
+
+/**
+ * Creates a new account. Supabase may require email
+ * confirmation, in which case `data.session` is null and the
+ * user must confirm before signing in.
+ */
+export async function signUp(
+  name: string,
+  email: string,
+  password: string
+) {
+  return supabase.auth.signUp({
+    email,
+    password,
+    options: {
+      data: { full_name: name.trim() },
+    },
+  });
+}
+
+/**
+ * Sends a password-reset link. The response is deliberately
+ * generic so account existence is never disclosed.
+ */
+export async function sendPasswordReset(email: string) {
+  return supabase.auth.resetPasswordForEmail(email, {
+    redirectTo: `${window.location.origin}/reset-password`,
+  });
 }
 
 export async function getUser() {

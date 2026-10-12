@@ -1,30 +1,39 @@
 "use client";
 
 import Link from "next/link";
-import {
-  FolderKanban,
-  MoreHorizontal,
-} from "lucide-react";
+import { useEffect, useState } from "react";
 
-const projects = [
-  {
-    name: "Atlas Enterprise OS",
-    status: "Active",
-    progress: 72,
-  },
-  {
-    name: "HR Portal",
-    status: "In Review",
-    progress: 84,
-  },
-  {
-    name: "Finance Dashboard",
-    status: "Completed",
-    progress: 100,
-  },
-];
+import { FolderKanban, Loader2 } from "lucide-react";
+
+import { getProjects, type Project } from "@/lib/projects";
 
 export default function RecentProjects() {
+  const [projects, setProjects] = useState<Project[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    getProjects()
+      .then((rows) => {
+        if (!cancelled) {
+          setProjects(rows.slice(0, 5));
+        }
+      })
+      .catch(() => {
+        /* Handled by the empty state below. */
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setLoading(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   return (
     <section className="rounded-2xl border border-white/[0.07] bg-white/[0.025] p-5 backdrop-blur-xl sm:p-6">
       <div className="mb-5 flex items-center justify-between">
@@ -47,15 +56,24 @@ export default function RecentProjects() {
       </div>
 
       <div className="space-y-2">
-        {projects.map((project) => (
-          <div
-            key={project.name}
-            className="group rounded-xl border border-white/[0.05] bg-black/[0.08] p-3.5 transition-all duration-200 hover:border-white/[0.09] hover:bg-white/[0.02]"
-          >
-            <div className="flex items-center gap-3">
+        {loading ? (
+          <div className="flex items-center justify-center gap-2 py-8 text-xs text-slate-500">
+            <Loader2 size={14} className="animate-spin" />
+            Loading projects…
+          </div>
+        ) : projects.length === 0 ? (
+          <div className="py-8 text-center text-xs text-slate-600">
+            No projects yet. Create one from the Projects page.
+          </div>
+        ) : (
+          projects.map((project) => (
+            <div
+              key={project.id}
+              className="group rounded-xl border border-white/[0.05] bg-black/[0.08] p-3.5 transition-all duration-200 hover:border-white/[0.09] hover:bg-white/[0.02]"
+            >
               <Link
                 href="/workspace/projects"
-                className="flex min-w-0 flex-1 items-center gap-3"
+                className="flex items-center gap-3"
               >
                 <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-white/[0.035]">
                   <FolderKanban
@@ -79,28 +97,20 @@ export default function RecentProjects() {
                     />
                   </div>
                 </div>
+
+                <div className="text-right">
+                  <p className="text-[11px] font-medium text-slate-400">
+                    {project.progress}%
+                  </p>
+
+                  <p className="mt-1 text-[10px] text-slate-600">
+                    {project.status}
+                  </p>
+                </div>
               </Link>
-
-              <div className="text-right">
-                <p className="text-[11px] font-medium text-slate-400">
-                  {project.progress}%
-                </p>
-
-                <p className="mt-1 text-[10px] text-slate-600">
-                  {project.status}
-                </p>
-              </div>
-
-              <button
-                type="button"
-                aria-label={`More options for ${project.name}`}
-                className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-slate-600 opacity-0 transition-all group-hover:opacity-100 hover:bg-white/[0.05] hover:text-slate-300"
-              >
-                <MoreHorizontal size={15} />
-              </button>
             </div>
-          </div>
-        ))}
+          ))
+        )}
       </div>
     </section>
   );

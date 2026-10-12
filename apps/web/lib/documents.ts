@@ -1,8 +1,9 @@
-import { supabase } from "./supabaseClient";
+import { logAuditClient } from "./audit.ts";
+import { supabase } from "./supabaseClient.ts";
 import {
   createSignedDocumentUrl,
   removeStoredDocument,
-} from "./storage";
+} from "./storage.ts";
 
 export type Document = {
   id: string;
@@ -13,7 +14,18 @@ export type Document = {
   mime_type: string;
   uploaded_by: string;
   created_at: string;
+  /** Preset category chosen at upload (migration 0004); null for legacy rows. */
+  category: string | null;
 };
+
+/** Preset categories offered at upload time. */
+export const DOCUMENT_CATEGORIES = [
+  "General",
+  "HR",
+  "Projects",
+  "Policies",
+  "Archives",
+] as const;
 
 /* =========================================================
    AUTH HELPERS
@@ -153,6 +165,12 @@ export async function deleteDocument(
 
     throw dbError;
   }
+
+  await logAuditClient({
+    action: "document.delete",
+    entity: "document",
+    entityId: id,
+  });
 
   return true;
 }

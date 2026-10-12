@@ -20,6 +20,7 @@ import { NextResponse } from "next/server";
 import { chunkText } from "@/lib/chunking";
 import { embedTexts } from "@/lib/embeddings";
 import { extractPdfText } from "@/lib/pdf";
+import { logAudit } from "@/lib/auditServer";
 import { getRouteAuth } from "@/lib/routeAuth";
 
 export const runtime = "nodejs";
@@ -269,6 +270,13 @@ export async function POST(request: Request) {
       if (insertError) {
         throw insertError;
       }
+
+      await logAudit(supabase, {
+        action: "document.ingest",
+        entity: "document",
+        entityId: doc.id,
+        metadata: { chunks: chunks.length },
+      });
 
       processed += 1;
       results.push({ documentId: doc.id, chunks: chunks.length });

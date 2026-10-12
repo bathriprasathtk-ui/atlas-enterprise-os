@@ -8,7 +8,7 @@ export default function KnowledgeHeader() {
         </h1>
 
         <p className="mt-2 text-slate-400">
-          Store, organize and search your organization's knowledge.
+          Store, organize and search your organization&apos;s knowledge.
         </p>
       </div>
 

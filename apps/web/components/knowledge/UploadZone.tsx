@@ -7,6 +7,7 @@ import {
   UploadCloud,
 } from "lucide-react";
 
+import { DOCUMENT_CATEGORIES } from "@/lib/documents";
 import { uploadDocument, validateUploadFile } from "@/lib/storage";
 import { supabase } from "@/lib/supabaseClient";
 
@@ -21,6 +22,9 @@ export default function UploadZone({ onUploaded }: UploadZoneProps) {
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
+  const [category, setCategory] = useState<string>(
+    DOCUMENT_CATEGORIES[0]
+  );
 
   function isPdf(file: File) {
     return (
@@ -73,6 +77,7 @@ export default function UploadZone({ onUploaded }: UploadZoneProps) {
             file_url: "",
             file_size: file.size,
             mime_type: file.type,
+            category,
             uploaded_by: user.id,
           })
           .select("id")
@@ -180,11 +185,38 @@ export default function UploadZone({ onUploaded }: UploadZoneProps) {
         }}
       />
 
+      <div className="mt-6 flex items-center justify-center gap-3">
+        <label
+          htmlFor="upload-category"
+          className="text-xs font-medium text-slate-400"
+        >
+          Category
+        </label>
+
+        <select
+          id="upload-category"
+          value={category}
+          disabled={uploading}
+          onChange={(event) => setCategory(event.target.value)}
+          className="rounded-lg border border-white/10 bg-black/30 px-3 py-2 text-xs text-white outline-none transition focus:border-cyan-400/40"
+        >
+          {DOCUMENT_CATEGORIES.map((value) => (
+            <option
+              key={value}
+              value={value}
+              className="bg-[#0b1220] text-white"
+            >
+              {value}
+            </option>
+          ))}
+        </select>
+      </div>
+
       <button
         type="button"
         onClick={() => inputRef.current?.click()}
         disabled={uploading}
-        className="mt-8 rounded-xl bg-cyan-500 px-8 py-3 font-semibold text-black transition hover:bg-cyan-400 disabled:opacity-50"
+        className="mt-5 rounded-xl bg-cyan-500 px-8 py-3 font-semibold text-black transition hover:bg-cyan-400 disabled:opacity-50"
       >
         {uploading ? "Uploading..." : "Browse Files"}
       </button>

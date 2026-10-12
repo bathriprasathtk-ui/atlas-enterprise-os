@@ -37,6 +37,7 @@ type SemanticState =
 export default function KnowledgePage() {
   const [documents, setDocuments] = useState<Document[]>([]);
   const [search, setSearch] = useState("");
+  const [category, setCategory] = useState("All");
   const [loading, setLoading] = useState(true);
   const [semantic, setSemantic] = useState<SemanticState>({
     status: "idle",
@@ -54,7 +55,19 @@ export default function KnowledgePage() {
   }
 
   useEffect(() => {
-    loadDocuments();
+    // Deep link from the top-bar search box: /workspace/knowledge?q=...
+    const initialQuery = new URLSearchParams(
+      window.location.search
+    ).get("q");
+
+    if (initialQuery) {
+      void Promise.resolve().then(() =>
+        setSearch(initialQuery)
+      );
+    }
+
+    // Deferred so no state update runs synchronously in the effect.
+    void Promise.resolve().then(loadDocuments);
   }, []);
 
   /* =========================================================
@@ -168,6 +181,24 @@ export default function KnowledgePage() {
     }
   }
 
+  const categories = (() => {
+    const names = new Set<string>();
+
+    for (const document of documents) {
+      if (document.category) {
+        names.add(document.category);
+      }
+    }
+
+    return [...names].sort();
+  })();
+
+  if (category !== "All") {
+    filteredDocuments = filteredDocuments.filter(
+      (document) => document.category === category
+    );
+  }
+
   return (
     <div className="space-y-8">
 
@@ -196,7 +227,11 @@ export default function KnowledgePage() {
         </p>
       )}
 
-      <CategoryFilter />
+      <CategoryFilter
+        categories={categories}
+        active={category}
+        onSelect={setCategory}
+      />
 
       <UploadZone onUploaded={loadDocuments} />
 

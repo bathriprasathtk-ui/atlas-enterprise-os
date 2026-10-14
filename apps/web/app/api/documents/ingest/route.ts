@@ -303,10 +303,9 @@ export async function POST(request: Request) {
 
       results.push({
         documentId: doc.id,
-        error:
-          error instanceof Error
-            ? error.message
-            : "Indexing failed.",
+        /* Detail already logged above — raw messages may
+           contain SQL or storage internals. */
+        error: "Indexing failed.",
       });
     }
   }

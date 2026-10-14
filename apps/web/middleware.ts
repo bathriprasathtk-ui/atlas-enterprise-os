@@ -15,6 +15,9 @@ import { createServerClient } from "@supabase/ssr";
 const SUPABASE_URL_ENV = "NEXT_PUBLIC_SUPABASE_URL";
 const SUPABASE_KEY_ENV = "NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY";
 
+/** Ceiling for JSON request bodies on /api/* (bytes). */
+const MAX_API_BODY_BYTES = 1_000_000;
+
 function isConfigured() {
   return Boolean(
     process.env[SUPABASE_URL_ENV] &&
@@ -74,6 +77,33 @@ export async function middleware(request: NextRequest) {
    */
   if (pathname === "/api/health") {
     return NextResponse.next({ request });
+  }
+
+  /*
+   * Cheap, stateless request-size guard for API traffic. Every
+   * API body in this app is small JSON (file bytes are pulled
+   * server-side from Storage, never uploaded through these
+   * routes), so a generous 1 MB ceiling rejects runaway payloads
+   * before any handler parses them. Note: this reads the declared
+   * Content-Length, so a chunked body without the header is not
+   * covered — that residual case is documented in DEPLOYMENT.md.
+   */
+  const declaredBytes = Number(
+    request.headers.get("content-length") ?? "0"
+  );
+
+  if (
+    isApi &&
+    Number.isFinite(declaredBytes) &&
+    declaredBytes > MAX_API_BODY_BYTES
+  ) {
+    return NextResponse.json(
+      {
+        error: `Request body exceeds ${MAX_API_BODY_BYTES} bytes.`,
+        code: "payload_too_large",
+      },
+      { status: 413, headers: { "Cache-Control": "no-store" } }
+    );
   }
 
   /* Never construct a client without configuration. */

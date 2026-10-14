@@ -19,6 +19,19 @@ import { validateWorkflow } from "@/lib/workflowValidation";
 /* Execution guard: bail out if a step takes too long. */
 const RUN_TIMEOUT_MS = 20_000;
 
+/*
+ * Marks a failure whose text is safe to show an operator: only
+ * these messages are returned from the execution step. Anything
+ * else that throws (a TypeError, a driver error, …) is logged
+ * server-side and replaced with a generic line, so internal
+ * details never reach the response body.
+ */
+function workflowFailure(text: string) {
+  const error = new Error(text);
+  error.name = "WorkflowFailure";
+  return error;
+}
+
 type WorkflowRow = {
   id: string;
   name: string;
@@ -117,7 +130,7 @@ export async function POST(request: Request) {
         const untilString = until.toISOString().slice(0, 10);
 
         if (Date.now() > deadline) {
-          throw new Error("Workflow execution timed out.");
+          throw workflowFailure("Workflow execution timed out.");
         }
 
         const { data: tasks, error: tasksError } =
@@ -131,7 +144,12 @@ export async function POST(request: Request) {
             .order("due_date", { ascending: true });
 
         if (tasksError) {
-          throw new Error(tasksError.message);
+          /* Logged, never rethrown verbatim: Postgres error text
+             would otherwise reach the API response. */
+          console.error("Workflow task query failed:", tasksError);
+          throw workflowFailure(
+            "Could not read tasks from the database."
+          );
         }
 
         const count = tasks?.length ?? 0;
@@ -152,7 +170,7 @@ export async function POST(request: Request) {
         since.setDate(since.getDate() - days);
 
         if (Date.now() > deadline) {
-          throw new Error("Workflow execution timed out.");
+          throw workflowFailure("Workflow execution timed out.");
         }
 
         const { data: documents, error: documentsError } =
@@ -164,7 +182,13 @@ export async function POST(request: Request) {
             .order("created_at", { ascending: false });
 
         if (documentsError) {
-          throw new Error(documentsError.message);
+          console.error(
+            "Workflow document query failed:",
+            documentsError
+          );
+          throw workflowFailure(
+            "Could not read documents from the database."
+          );
         }
 
         const count = documents?.length ?? 0;
@@ -183,10 +207,11 @@ export async function POST(request: Request) {
       }
     } catch (error) {
       status = "failed";
+      console.error("Workflow execution error:", error);
       message =
-        error instanceof Error
+        error instanceof Error && error.name === "WorkflowFailure"
           ? error.message
-          : "The workflow failed to execute.";
+          : "The workflow failed while reading workspace data.";
     }
 
     const finishedAt = new Date().toISOString();
@@ -248,15 +273,14 @@ export async function POST(request: Request) {
       { status: status === "success" ? 200 : 500 }
     );
   } catch (error) {
+    /* Detail stays in the server log; the client gets a
+       generic failure it can act on without internals. */
     console.error("Workflow run error:", error);
 
     return NextResponse.json(
       {
         status: "failed",
-        error:
-          error instanceof Error
-            ? error.message
-            : "The workflow could not be run.",
+        error: "The workflow could not be run.",
       },
       { status: 500 }
     );

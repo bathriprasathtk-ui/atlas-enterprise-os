@@ -261,6 +261,38 @@ try {
   const missing = await fetch(`${app1.base}/api/does-not-exist`);
   check("unknown API path → 404", missing.status === 404);
 
+  console.log(`\n-- request validation --`);
+
+  const malformed = await fetch(`${app1.base}/api/ai/ask`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: "{this is not valid json",
+  });
+  check(
+    "malformed JSON without session → 401 (auth runs first)",
+    malformed.status === 401,
+    `status ${malformed.status}`
+  );
+
+  const oversized = await fetch(`${app1.base}/api/ai/ask`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ question: "x".repeat(1_500_000) }),
+  });
+  const oversizedBody = await oversized.text().catch(() => "");
+  let oversizedJson = {};
+  try {
+    oversizedJson = JSON.parse(oversizedBody);
+  } catch {
+    /* asserted below */
+  }
+  check(
+    "oversized API body → 413",
+    oversized.status === 413 &&
+      oversizedJson.code === "payload_too_large",
+    `status ${oversized.status} body ${oversizedBody.slice(0, 120)}`
+  );
+
   await stopNext(app1);
   phase1.proc = null;
 
@@ -296,7 +328,12 @@ try {
   );
   check(
     "health reports supabase unconfigured",
+    health2Body.configured?.supabase === false,
+    /* Self-diagnosing: NEXT_PUBLIC_* are inlined at build time, so
+       this only holds when the suite (or CI) built without them. */
     health2Body.configured?.supabase === false
+      ? ""
+      : "NEXT_PUBLIC_* were baked in at build time — rebuild without them"
   );
 
   const landing2 = await fetch(`${app2.base}/`);

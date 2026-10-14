@@ -50,12 +50,14 @@ jobs:
         run: npm test
 
       - name: Production build
+        # Built WITHOUT placeholder env on purpose: NEXT_PUBLIC_*
+        # values are inlined at build time, and the e2e suite boots
+        # the server with controlled runtime credentials (including a
+        # deliberately unconfigured server). Building with values here
+        # would bake them in and make that phase meaningless.
+        # A build that receives real build args is covered by the
+        # `docker build` job.
         run: npm run build
-        env:
-          # Placeholders only — real values live in repo secrets.
-          NEXT_PUBLIC_SUPABASE_URL: https://placeholder.supabase.co
-          NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: placeholder-key
-          GEMINI_API_KEY: placeholder-key
 
       - name: End-to-end (HTTP against the production build)
         run: npm run test:e2e

@@ -205,7 +205,17 @@ export async function POST(request: Request) {
      * =========================================================
      */
 
-    const body = await request.json();
+    /* Malformed JSON is a client mistake, not a server error. */
+    let body: { question?: unknown };
+
+    try {
+      body = await request.json();
+    } catch {
+      return NextResponse.json(
+        { error: "Request body must be valid JSON." },
+        { status: 400 }
+      );
+    }
 
     const question =
       typeof body.question === "string"
@@ -485,14 +495,16 @@ ${limitedText}
       );
     }
 
+    /*
+     * Keep the detail in server logs only: an unexpected Error
+     * may carry SQL, connection strings or filesystem paths, and
+     * none of that belongs in a response body.
+     */
     console.error("Atlas AI error:", error);
 
     return NextResponse.json(
       {
-        error:
-          error instanceof Error
-            ? error.message
-            : "Atlas AI failed to process the request.",
+        error: "Atlas AI failed to process the request.",
       },
       {
         status: 500,

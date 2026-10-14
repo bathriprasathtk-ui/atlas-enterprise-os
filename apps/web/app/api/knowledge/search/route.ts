@@ -84,9 +84,10 @@ export async function POST(request: Request) {
   const apiKey = process.env.GEMINI_API_KEY;
 
   if (!apiKey) {
+    /* Unconfigured service, not a crash — see DEPLOYMENT.md. */
     return NextResponse.json(
       { error: "GEMINI_API_KEY is not configured." },
-      { status: 500 }
+      { status: 503 }
     );
   }
 

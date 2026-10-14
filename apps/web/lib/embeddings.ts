@@ -32,6 +32,13 @@ export const EMBEDDING_MAX_INPUT_CHARS = 28000;
  */
 const EMBEDDING_BATCH_SIZE = 20;
 
+/**
+ * Ceiling for one batchEmbedContents call. A hung request
+ * throws EmbeddingError, which callers treat as "indexing
+ * unavailable" rather than hanging the route.
+ */
+const EMBEDDING_TIMEOUT_MS = 30_000;
+
 const EMBEDDING_ENDPOINT = `https://generativelanguage.googleapis.com/v1beta/models/${EMBEDDING_MODEL}:batchEmbedContents`;
 
 export class EmbeddingError extends Error {
@@ -102,16 +109,33 @@ export async function embedTexts(
       offset + EMBEDDING_BATCH_SIZE
     );
 
-    const response = await fetch(EMBEDDING_ENDPOINT, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-goog-api-key": apiKey,
-      },
-      body: JSON.stringify({
-        requests: batch.map(buildRequest),
-      }),
-    });
+    let response: Response;
+
+    try {
+      response = await fetch(EMBEDDING_ENDPOINT, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-goog-api-key": apiKey,
+        },
+        body: JSON.stringify({
+          requests: batch.map(buildRequest),
+        }),
+        signal: AbortSignal.timeout(EMBEDDING_TIMEOUT_MS),
+      });
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        (error.name === "TimeoutError" ||
+          error.name === "AbortError")
+      ) {
+        throw new EmbeddingError(
+          "Embedding request timed out."
+        );
+      }
+
+      throw error;
+    }
 
     if (!response.ok) {
       const detail = await response

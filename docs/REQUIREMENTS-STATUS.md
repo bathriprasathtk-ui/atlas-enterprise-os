@@ -147,7 +147,7 @@ Audit logs ✅ (real producers for task/project/document/workflow/profile/articl
 
 | Item | Why | How to unblock |
 |---|---|---|
-| Knowledge Graph, document linking | PRD §12 lists it under **Version 2.0**; SRS §3 defers it | Design + ship as v2.0; not faked in v1 |
+| Knowledge Graph, document linking | PRD §12 lists it under **Version 2.0**; SRS §3 defers it | Plan written in `docs/KNOWLEDGE-GRAPH-PLAN.md` (entities, extraction, persistence, org isolation, visualization); not faked in v1 |
 | MFA enforcement | Enrolment/verify/disable UI is shipped; requiring the second factor at sign-in is a Supabase dashboard setting, and the login challenge flow cannot be tested without a project | Create the Supabase project → enable MFA → sign in with a TOTP factor on a test account BEFORE enforcing AAL2 |
 | SSO verification | Google button shipped but no Google OAuth credentials/IdP exist here | Configure the Google provider in Supabase Auth + set `NEXT_PUBLIC_ENABLE_GOOGLE_LOGIN=1` at build time |
 | Email provider account | Knock integration is implemented end-to-end (chosen via service research; env `KNOCK_API_KEY`). Without the key, invitations still work and the UI says email is not configured | Create a Knock account (free tier), connect an email provider inside it, define the `org_invitation` workflow, set `KNOCK_API_KEY` |

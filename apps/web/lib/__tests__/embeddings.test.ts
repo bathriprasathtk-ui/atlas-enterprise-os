@@ -125,6 +125,36 @@ describe("embedTexts", () => {
         error instanceof EmbeddingError && error.status === 429
     );
   });
+
+  it("maps a request timeout to a clear EmbeddingError", async () => {
+    globalThis.fetch = (async () => {
+      const timeout = new Error("The operation was aborted due to timeout");
+      timeout.name = "TimeoutError";
+      throw timeout;
+    }) as typeof fetch;
+
+    await assert.rejects(
+      () => embedTexts(["one"], "key"),
+      (error: unknown) =>
+        error instanceof EmbeddingError &&
+        error.message.includes("timed out")
+    );
+  });
+
+  it("passes an abort signal so a hung request cannot stall the route", async () => {
+    const seen: { signal: AbortSignal | null | undefined } = {
+      signal: undefined,
+    };
+
+    globalThis.fetch = (async (_url, init) => {
+      seen.signal = init?.signal ?? null;
+      return fakeResponse([fakeVector()]);
+    }) as typeof fetch;
+
+    await embedTexts(["one"], "key");
+
+    assert.ok(seen.signal instanceof AbortSignal);
+  });
 });
 
 describe("embedText", () => {

@@ -15,6 +15,13 @@ const GEMINI_MODEL = "gemini-3.6-flash";
 /** Characters of full-document text per PDF in legacy mode. */
 const LEGACY_MAX_CHARS_PER_DOC = 12000;
 
+/**
+ * Ceiling for one generateContent call. Kept well below any
+ * platform function budget so a hung request surfaces as a
+ * clean 504 instead of a platform timeout.
+ */
+const GEMINI_TIMEOUT_MS = 30_000;
+
 class GeminiApiError extends Error {
   readonly status: number;
 
@@ -58,42 +65,83 @@ ${context}
   `.trim();
 }
 
+type GeminiResponse = {
+  error?: { message?: string };
+  candidates?: {
+    content?: { parts?: { text?: string }[] };
+  }[];
+};
+
 async function callGemini(
   apiKey: string,
   prompt: string
 ): Promise<string> {
-  const response = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`,
-    {
-      method: "POST",
+  let response: Response;
 
-      headers: {
-        "Content-Type": "application/json",
-        "x-goog-api-key": apiKey,
-      },
+  try {
+    response = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`,
+      {
+        method: "POST",
 
-      body: JSON.stringify({
-        contents: [
-          {
-            role: "user",
-
-            parts: [
-              {
-                text: prompt,
-              },
-            ],
-          },
-        ],
-
-        generationConfig: {
-          temperature: 0.2,
-          maxOutputTokens: 1200,
+        headers: {
+          "Content-Type": "application/json",
+          "x-goog-api-key": apiKey,
         },
-      }),
-    }
-  );
 
-  const data = await response.json();
+        body: JSON.stringify({
+          contents: [
+            {
+              role: "user",
+
+              parts: [
+                {
+                  text: prompt,
+                },
+              ],
+            },
+          ],
+
+          generationConfig: {
+            temperature: 0.2,
+            maxOutputTokens: 1200,
+          },
+        }),
+
+        /*
+         * A hung provider request must not hold the route open
+         * until the platform kills it - fail with an
+         * actionable status instead.
+         */
+        signal: AbortSignal.timeout(GEMINI_TIMEOUT_MS),
+      }
+    );
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      (error.name === "TimeoutError" ||
+        error.name === "AbortError")
+    ) {
+      throw new GeminiApiError(
+        "Atlas AI took too long to respond. Please try again.",
+        504
+      );
+    }
+
+    throw error;
+  }
+
+  /* Provider may answer with a non-JSON body (proxy error page). */
+  let data: GeminiResponse;
+
+  try {
+    data = (await response.json()) as GeminiResponse;
+  } catch {
+    throw new GeminiApiError(
+      "Gemini returned an unreadable response.",
+      502
+    );
+  }
 
   if (!response.ok) {
     console.error("Gemini API error:", data);
@@ -242,12 +290,14 @@ export async function POST(request: Request) {
     const apiKey = process.env.GEMINI_API_KEY;
 
     if (!apiKey) {
+      /* Not a crash: the service is deliberately unconfigured.
+         503 matches the documented contract in DEPLOYMENT.md. */
       return NextResponse.json(
         {
           error: "GEMINI_API_KEY is not configured.",
         },
         {
-          status: 500,
+          status: 503,
         }
       );
     }

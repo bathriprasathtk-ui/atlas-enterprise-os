@@ -11,7 +11,7 @@
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 
-import { embedText } from "@/lib/embeddings";
+import { embedText } from "./embeddings.ts";
 
 /** Top-k chunks fed to the AI per question. */
 export const TOP_K_CHUNKS = 8;
@@ -75,13 +75,16 @@ export async function findRelevantChunks(
 ): Promise<ChunkMatch[]> {
   const embedding = await embedText(question, apiKey);
 
+  /* The same floor is applied in SQL and in memory below. */
+  const floor =
+    options?.minSimilarity ?? MIN_SIMILARITY;
+
   const { data, error } = await supabase.rpc(
     "match_document_chunks",
     {
       query_embedding: embedding,
       match_count: options?.matchCount ?? TOP_K_CHUNKS,
-      min_similarity:
-        options?.minSimilarity ?? MIN_SIMILARITY,
+      min_similarity: floor,
     }
   );
 
@@ -95,7 +98,7 @@ export async function findRelevantChunks(
     .filter(
       (row) =>
         typeof row.similarity === "number" &&
-        row.similarity >= MIN_SIMILARITY
+        row.similarity >= floor
     )
     .map((row) => ({
       documentId: row.document_id,

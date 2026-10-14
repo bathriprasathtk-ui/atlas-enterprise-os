@@ -78,6 +78,30 @@ Full suite: `npm run test:db` (from `apps/web/`) — **81/81 checks** against a
 real PostgreSQL 18 instance, including pgvector and a second idempotent pass
 of every migration.
 
+**Two modes.** With `ATLAS_TEST_DATABASE_URL` set, the suite runs against
+that server (CI uses the `pgvector/pgvector:pg16` service container with
+`ATLAS_TEST_REQUIRE_VECTOR=1`, so vector checks are mandatory there).
+Without it, the suite boots an embedded PostgreSQL 18 from the
+`embedded-postgres` devDependency; that build ships **without** pgvector,
+so the suite reports `81/81` when pgvector is present or `78 passed,
+1 skipped` when it is not — never a false failure.
+
+To give the embedded server pgvector (optional, local only — nothing is
+committed), drop the extension files into the embedded package, e.g. on
+Ubuntu with the PGDG apt repo:
+
+```bash
+# postgresql-18-pgvector_0.8.6 for PG18; extract, do not install
+ar x postgresql-18-pgvector_*.deb && tar -xf data.tar.xz
+N=node_modules/@embedded-postgres/linux-x64/native
+cp usr/lib/postgresql/18/lib/vector.so "$N/lib/"
+cp usr/share/postgresql/18/extension/vector* "$N/share/postgresql/extension/"
+npm run test:db   # now 81/81 with vector checks enabled
+```
+
+The suite already points `dynamic_library_path` at that lib directory;
+without the files it degrades to the documented skip.
+
 How to apply:
 
 * **Supabase dashboard** → SQL Editor: run the files in order, or

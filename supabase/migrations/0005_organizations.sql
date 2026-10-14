@@ -264,11 +264,18 @@ from public.org_members m
 where d.organization_id is null
   and m.user_id = d.uploaded_by;
 
-update public.document_chunks c
-set organization_id = m.organization_id
-from public.org_members m
-where c.organization_id is null
-  and m.user_id = c.uploaded_by;
+-- document_chunks exists only when 0002 applied (pgvector)
+
+do $$
+begin
+    if to_regclass('public.document_chunks') is not null then
+        update public.document_chunks c
+        set organization_id = m.organization_id
+        from public.org_members m
+        where c.organization_id is null
+          and m.user_id = c.uploaded_by;
+    end if;
+end $$;
 
 update public.projects p
 set organization_id = m.organization_id
@@ -966,16 +973,20 @@ begin
             limit greatest(coalesce(match_count, 8), 1);
         $inner$;
         $p$;
+
+        execute $p$
+            revoke execute on function public.match_document_chunks(
+                vector, integer, double precision
+            ) from public, anon
+        $p$;
+        execute $p$
+            grant execute on function public.match_document_chunks(
+                vector, integer, double precision
+            ) to authenticated
+        $p$;
     end if;
 end;
 $$;
-
-revoke execute on function public.match_document_chunks(
-    vector, integer, double precision
-) from public, anon;
-grant execute on function public.match_document_chunks(
-    vector, integer, double precision
-) to authenticated;
 
 
 -- =========================================================

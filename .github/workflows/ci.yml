@@ -13,7 +13,11 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    # main plus the Freebuff working branches, so a pushed
+    # feature branch is validated without needing a PR first.
+    branches:
+      - main
+      - "freebuff/**"
   pull_request:
 
 jobs:
@@ -94,6 +98,13 @@ jobs:
         env:
           ATLAS_TEST_DATABASE_URL: postgres://atlas:atlas@127.0.0.1:5432/atlas
           ATLAS_TEST_REQUIRE_VECTOR: "1"
+
+      # Regression guard: the pgvector-less path must still apply
+      # every later migration. This run previously aborted with
+      # `relation "public.document_chunks" does not exist`
+      # (0005 referenced a table 0002 did not create).
+      - name: Database suite without pgvector (embedded)
+        run: npm run test:db
 
   docker:
     name: docker build

@@ -1,11 +1,20 @@
 /* =========================================================
-   MULTI-FACTORS AUTHENTICATION (client data layer)
+   MULTI-FACTOR AUTHENTICATION (client data layer)
 
-   Real supabase-js MFA APIs (TOTP). Enrolling stores a
-   factor on the user's Supabase account; verifying promotes
-   the session to AAL2. Requiring the second factor at
-   sign-in is a Supabase dashboard setting — this module
-   never claims enforcement the app does not perform.
+   Real supabase-js MFA APIs (TOTP):
+   - settings page: enroll / verify / disable factors;
+   - sign-in: the login form calls pendingTotpFactorId()
+     and challenges before entering the workspace;
+   - middleware + getRouteAuth() reject an AAL1 session
+     that still needs its second factor (app-level
+     enforcement — Supabase does not challenge for us).
+
+   Supabase Auth itself does NOT require the second factor
+   at sign-in; the application does, at every layer it
+   controls. Direct PostgREST access with an AAL1 JWT is
+   the one layer this cannot cover — see the optional RLS
+   hardening recipe in docs/DEPLOYMENT.md before enabling
+   MFA for real users.
 ========================================================= */
 
 import { supabase } from "./supabaseClient.ts";
@@ -21,6 +30,54 @@ export type TotpEnrollment = {
   secret: string;
   uri: string;
 };
+
+/**
+ * True when a signed-in session has not completed a second
+ * factor that its user has already enrolled: password alone
+ * (AAL1) must not enter the workspace yet.
+ */
+export function isMfaPending(aal: {
+  currentLevel: string | null;
+  nextLevel: string | null;
+} | null): boolean {
+  return (
+    aal !== null &&
+    aal.currentLevel === "aal1" &&
+    aal.nextLevel === "aal2"
+  );
+}
+
+/** The verified TOTP factor to challenge, or null. */
+export function selectVerifiedTotpFactor(
+  factors: TotpFactor[]
+): TotpFactor | null {
+  return (
+    factors.find((factor) => factor.status === "verified") ??
+    null
+  );
+}
+
+/**
+ * Factor id to challenge for the CURRENT session, or null
+ * when no second factor is pending (no session, already
+ * AAL2, or no verified factor).
+ */
+export async function pendingTotpFactorId(): Promise<
+  string | null
+> {
+  const { data: aal } =
+    await supabase.auth.mfa.getAuthenticatorAssuranceLevel();
+
+  if (!isMfaPending(aal)) {
+    return null;
+  }
+
+  const factors = await listTotpFactors().catch(
+    () => [] as TotpFactor[]
+  );
+
+  return selectVerifiedTotpFactor(factors)?.id ?? null;
+}
 
 /** TOTP factors (verified and pending) for the signed-in user. */
 export async function listTotpFactors(): Promise<TotpFactor[]> {

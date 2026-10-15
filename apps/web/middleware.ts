@@ -2,6 +2,8 @@ import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import { createServerClient } from "@supabase/ssr";
 
+import { isMfaPending } from "@/lib/mfa";
+
 /*
  * Deployment misconfiguration guard.
  *
@@ -148,15 +150,12 @@ export async function middleware(request: NextRequest) {
         },
       },
     }
-  );
-
-  const {
+  );  const {
     data: { user },
   } = await supabase.auth.getUser();
 
   const isWorkspace =
-    pathname === "/workspace" ||
-    pathname.startsWith("/workspace/");
+    pathname === "/workspace" || pathname.startsWith("/workspace/");
 
   const isLogin = pathname === "/login";
 
@@ -166,7 +165,30 @@ export async function middleware(request: NextRequest) {
     );
   }
 
-  if (isLogin && user) {
+  /*
+   * Second-factor gate. Supabase never challenges on its
+   * own, so a user who enrolled TOTP would otherwise walk
+   * straight into the workspace on a password-only (AAL1)
+   * session. Send them to /login, which detects the
+   * pending session and shows the code prompt — and never
+   * bounce them back while that factor is outstanding.
+   */
+  const mfaPending =
+    user !== null && (isWorkspace || isLogin)
+      ? isMfaPending(
+          (
+            await supabase.auth.mfa.getAuthenticatorAssuranceLevel()
+          ).data
+        )
+      : false;
+
+  if (isWorkspace && mfaPending) {
+    return NextResponse.redirect(
+      new URL("/login", request.url)
+    );
+  }
+
+  if (isLogin && user && !mfaPending) {
     return NextResponse.redirect(
       new URL("/workspace/dashboard", request.url)
     );

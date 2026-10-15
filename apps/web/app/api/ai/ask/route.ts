@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { createServerClient } from "@supabase/ssr";
 import { cookies } from "next/headers";
 
+import { isMfaPending } from "@/lib/mfa";
 import { extractPdfText } from "@/lib/pdf";
 import {
   countUserChunks,
@@ -225,6 +226,22 @@ export async function POST(request: Request) {
         {
           status: 401,
         }
+      );
+    }
+
+    /* Same second-factor gate as getRouteAuth(): an enrolled
+       TOTP user must finish the login challenge (AAL2) before
+       asking the assistant anything. */
+    const { data: aal } =
+      await supabase.auth.mfa.getAuthenticatorAssuranceLevel();
+
+    if (isMfaPending(aal)) {
+      return NextResponse.json(
+        {
+          error: "Two-factor verification required.",
+          code: "mfa_required",
+        },
+        { status: 401 }
       );
     }
 

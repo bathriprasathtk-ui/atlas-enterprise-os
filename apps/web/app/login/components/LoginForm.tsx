@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 
 import Button from "@/components/ui/Button";
@@ -13,8 +13,9 @@ import {
   signInWithGoogle,
   signUp,
 } from "@/lib/auth";
+import { pendingTotpFactorId, verifyTotp } from "@/lib/mfa";
 
-type Mode = "signin" | "signup" | "reset";
+type Mode = "signin" | "signup" | "reset" | "mfa";
 
 /**
  * Build-time flag: the Google button only appears when the
@@ -38,12 +39,16 @@ const HEADERS: Record<
     title: "Create your account",
     subtitle:
       "Set up your Atlas account and start organizing your work.",
-  },
-  reset: {
+  },  reset: {
     eyebrow: "Account recovery",
     title: "Reset your password",
+    subtitle: "We will email you a link to choose a new password.",
+  },
+  mfa: {
+    eyebrow: "Two-factor",
+    title: "Verify it's you",
     subtitle:
-      "We will email you a link to choose a new password.",
+      "Your password was accepted. Enter the 6-digit code from your authenticator app to finish signing in.",
   },
 };
 
@@ -63,6 +68,38 @@ export default function LoginForm() {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
 
+  /* Second-factor challenge state (mode "mfa"). */
+  const [mfaFactorId, setMfaFactorId] = useState<string | null>(
+    null
+  );
+  const [mfaCode, setMfaCode] = useState("");
+
+  /*
+   * A session can arrive password-authenticated (AAL1) but
+   * still missing its second factor — middleware redirects
+   * such users here. Prompt for the code immediately instead
+   * of asking for the password again.
+   */
+  useEffect(() => {
+    let cancelled = false;
+
+    void pendingTotpFactorId()
+      .then((factorId) => {
+        if (!cancelled && factorId) {
+          setMfaFactorId(factorId);
+          setMode("mfa");
+        }
+      })
+      .catch(() => {
+        /* Not signed in (or Supabase unconfigured): stay on
+           the password form — no challenge is pending. */
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const header = HEADERS[mode];
 
   function switchMode(next: Mode) {
@@ -72,6 +109,13 @@ export default function LoginForm() {
     setPassword("");
     setConfirmPassword("");
     setShowPassword(false);
+    setMfaCode("");
+    setMfaFactorId(null);
+  }
+
+  function enterWorkspace() {
+    router.replace("/workspace/dashboard");
+    router.refresh();
   }
 
   /* ---------------- actions ---------------- */
@@ -88,6 +132,39 @@ export default function LoginForm() {
     setLoading(true);
 
     try {
+      if (mode === "mfa") {
+        const code = mfaCode.trim();
+
+        if (!/^\d{6}$/.test(code)) {
+          setError(
+            "Enter the 6-digit code from your authenticator app."
+          );
+          return;
+        }
+
+        if (!mfaFactorId) {
+          setError(
+            "No challenge is pending. Sign in again to start over."
+          );
+          return;
+        }
+
+        try {
+          await verifyTotp(mfaFactorId, code);
+        } catch (err) {
+          setError(
+            err instanceof Error && err.message
+              ? err.message
+              : "That code was not accepted. Try the current code."
+          );
+          return;
+        }
+
+        /* Session upgraded to AAL2 — now it may enter. */
+        enterWorkspace();
+        return;
+      }
+
       if (mode === "signin") {
         const { error: signInError } = await signIn(
           email.trim(),
@@ -99,8 +176,23 @@ export default function LoginForm() {
           return;
         }
 
-        router.replace("/workspace/dashboard");
-        router.refresh();
+        /*
+         * An enrolled TOTP factor must be challenged now:
+         * Supabase does not enforce the second factor on its
+         * own, so this is where "MFA enabled" becomes real.
+         */
+        const factorId =
+          await pendingTotpFactorId().catch(() => null);
+
+        if (factorId) {
+          setMfaFactorId(factorId);
+          setMfaCode("");
+          setError("");
+          setMode("mfa");
+          return;
+        }
+
+        enterWorkspace();
         return;
       }
 
@@ -130,8 +222,7 @@ export default function LoginForm() {
 
         if (data.session) {
           /* Email confirmation disabled: signed in already. */
-          router.replace("/workspace/dashboard");
-          router.refresh();
+          enterWorkspace();
           return;
         }
 
@@ -191,18 +282,22 @@ export default function LoginForm() {
   }
 
   const busyLabel =
-    mode === "signin"
-      ? "Signing in..."
-      : mode === "signup"
-        ? "Creating account..."
-        : "Sending link...";
+    mode === "mfa"
+      ? "Verifying..."
+      : mode === "signin"
+        ? "Signing in..."
+        : mode === "signup"
+          ? "Creating account..."
+          : "Sending link...";
 
   const submitLabel =
-    mode === "signin"
-      ? "Sign in  →"
-      : mode === "signup"
-        ? "Create account  →"
-        : "Send reset link  →";
+    mode === "mfa"
+      ? "Verify  →"
+      : mode === "signin"
+        ? "Sign in  →"
+        : mode === "signup"
+          ? "Create account  →"
+          : "Send reset link  →";
 
   return (
     <Card className="relative w-full rounded-[24px] border border-white/10 bg-[#0b1220]/85 p-7 shadow-[0_25px_80px_rgba(0,0,0,0.45)] backdrop-blur-2xl transition-all duration-500 sm:p-8">
@@ -280,31 +375,33 @@ export default function LoginForm() {
           </div>
         )}
 
-        {/* Email */}
-        <div className="mb-5">
-          <label
-            htmlFor="email"
-            className="mb-2 block text-sm font-medium text-slate-300"
-          >
-            Email address
-          </label>
+        {/* Email (hidden while the second factor is prompted) */}
+        {mode !== "mfa" && (
+          <div className="mb-5">
+            <label
+              htmlFor="email"
+              className="mb-2 block text-sm font-medium text-slate-300"
+            >
+              Email address
+            </label>
 
-          <Input
-            id="email"
-            type="email"
-            placeholder="you@company.com"
-            value={email}
-            onChange={(event) => {
-              setEmail(event.target.value);
-              if (error) setError("");
-            }}
-            autoComplete="email"
-            required
-          />
-        </div>
+            <Input
+              id="email"
+              type="email"
+              placeholder="you@company.com"
+              value={email}
+              onChange={(event) => {
+                setEmail(event.target.value);
+                if (error) setError("");
+              }}
+              autoComplete="email"
+              required
+            />
+          </div>
+        )}
 
-        {/* Password (not in reset mode) */}
-        {mode !== "reset" && (
+        {/* Password (signin/signup only) */}
+        {mode !== "reset" && mode !== "mfa" && (
           <div className="mb-5">
             <div className="mb-2 flex items-center justify-between">
               <label
@@ -418,6 +515,41 @@ export default function LoginForm() {
           </div>
         )}
 
+        {/* Second-factor code (challenge step) */}
+        {mode === "mfa" && (
+          <div className="mb-5">
+            <label
+              htmlFor="mfa-code"
+              className="mb-2 block text-sm font-medium text-slate-300"
+            >
+              Authentication code
+            </label>
+
+            <Input
+              id="mfa-code"
+              type="text"
+              inputMode="numeric"
+              autoComplete="one-time-code"
+              placeholder="123456"
+              value={mfaCode}
+              onChange={(event) => {
+                setMfaCode(
+                  event.target.value.replace(/\D/g, "").slice(0, 6)
+                );
+                if (error) setError("");
+              }}
+              maxLength={6}
+              required
+              className="text-center text-lg tracking-[0.5em]"
+            />
+
+            <p className="mt-2 text-xs text-slate-500">
+              Open your authenticator app — the code refreshes
+              every 30 seconds.
+            </p>
+          </div>
+        )}
+
         {/* Session note (signin only — replaces the old
             non-functional "Remember me" checkbox) */}
         {mode === "signin" && (
@@ -432,7 +564,7 @@ export default function LoginForm() {
           </div>
         )}
 
-        {(mode === "reset" || mode === "signup") && (
+        {(mode === "reset" || mode === "signup" || mode === "mfa") && (
           <div className="mb-6" />
         )}
 
@@ -482,7 +614,7 @@ export default function LoginForm() {
             </>
           )}
 
-          {mode !== "signin" && (
+          {mode !== "signin" && mode !== "mfa" && (
             <>
               {mode === "signup"
                 ? "Already have an account? "
@@ -493,6 +625,19 @@ export default function LoginForm() {
                 onClick={() => switchMode("signin")}
               >
                 Sign in
+              </button>
+            </>
+          )}
+
+          {mode === "mfa" && (
+            <>
+              Wrong account?{" "}
+              <button
+                type="button"
+                className="font-medium text-cyan-400 transition hover:text-cyan-300"
+                onClick={() => switchMode("signin")}
+              >
+                Use a different account
               </button>
             </>
           )}

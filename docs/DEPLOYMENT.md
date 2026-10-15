@@ -40,7 +40,10 @@ Notes:
   a Knock account, connect your email provider in its
   dashboard, define the `org_invitation` workflow (its email
   channel resolves the recipient from the invited address),
-  then set `KNOCK_API_KEY`.
+  then set `KNOCK_API_KEY`. The workflow data carries
+  `email`, `organization_name`, `invited_by_name` and
+  `expires_in_days` (7, matching migration `0008`) — use the
+  last one in the email copy so invitees know the window.
 * Never commit `.env.local`. Template: `apps/web/.env.example`.
 * On Vercel/other hosts, set all three in the project settings;
   for Docker pass `NEXT_PUBLIC_*` as `--build-arg`s (see header
@@ -57,6 +60,18 @@ Notes:
    SMTP (Supabase's built-in email works for development; use a real
    SMTP provider in production) and set the Site URL to your origin.
 4. **Gemini**: create an API key in Google AI Studio.
+5. **Multi-factor authentication (recommended before real users)**:
+   in Supabase Auth → MFA, allow enrollment and verification
+   (anything **but** *Verification Disabled* — that mode turns off
+   Supabase's challenge/verify APIs and breaks the login prompt).
+   No further flag is needed: Supabase never challenges on its own,
+   so the app does it. After a password succeeds, `/login` shows the
+   TOTP code step for any user with a verified factor, `middleware`
+   keeps password-only (AAL1) sessions out of `/workspace`, and
+   `getRouteAuth()` / `/api/ai/ask` answer 401 until AAL2. Verify
+   once with a test account before enabling: Settings → enrol in
+   two-factor → sign out → sign in → code prompt → workspace
+   (see §7 step 9). The PostgREST/RLS residual is in §9.
 
 ---
 
@@ -73,8 +88,9 @@ Apply **in this order** — each file is idempotent (safe to re-run):
 | 5 | `0005_organizations.sql` | organizations, org_members (owner/admin/member), departments, invitations + RPCs; org-scoped RLS on every workspace table; personal-org backfill | Applied + 58 RLS/RBAC assertions on PostgreSQL 18 |
 | 6 | `0006_membership_audit.sql` | membership audit trigger + notifications for role changes/removals | Applied + 10 assertions on PostgreSQL 18 |
 | 7 | `0007_knowledge_articles.sql` | knowledge_articles + immutable version history, trigger-enforced | Applied + 11 assertions on PostgreSQL 18 |
+| 8 | `0008_invitation_expiry.sql` | `org_invitations.expires_at` (7-day window), re-issued `invite_member` / `my_invitations` / `accept_invitation` so expired invites are hidden and rejected | Applied + 6 assertions on PostgreSQL 18 (expiry, hidden, reject, re-invite refresh, accept) |
 
-Full suite: `npm run test:db` (from `apps/web/`) — **81/81 checks** against a
+Full suite: `npm run test:db` (from `apps/web/`) — **87/87 checks** against a
 real PostgreSQL 18 instance, including pgvector and a second idempotent pass
 of every migration.
 
@@ -83,7 +99,7 @@ that server (CI uses the `pgvector/pgvector:pg16` service container with
 `ATLAS_TEST_REQUIRE_VECTOR=1`, so vector checks are mandatory there).
 Without it, the suite boots an embedded PostgreSQL 18 from the
 `embedded-postgres` devDependency; that build ships **without** pgvector,
-so the suite reports `81/81` when pgvector is present or `78 passed,
+so the suite reports `87/87` when pgvector is present or `84 passed,
 1 skipped` when it is not — never a false failure.
 
 To give the embedded server pgvector (optional, local only — nothing is
@@ -96,7 +112,7 @@ ar x postgresql-18-pgvector_*.deb && tar -xf data.tar.xz
 N=node_modules/@embedded-postgres/linux-x64/native
 cp usr/lib/postgresql/18/lib/vector.so "$N/lib/"
 cp usr/share/postgresql/18/extension/vector* "$N/share/postgresql/extension/"
-npm run test:db   # now 81/81 with vector checks enabled
+npm run test:db   # now 87/87 with vector checks enabled
 ```
 
 The suite already points `dynamic_library_path` at that lib directory;
@@ -172,6 +188,11 @@ Run against the **actual deployed origin**:
 6. Two accounts: neither can see the other's documents/tasks/projects (RLS).
 7. Password reset email link opens `/reset-password` and updates the password.
 8. Docker `HEALTHCHECK` reports healthy.
+9. If MFA is enabled (§3, item 5): enrol a test account in
+   two-factor, sign out, sign in → the code prompt appears;
+   a wrong code is rejected; the correct code lands on the
+   dashboard; and an AAL1 API call (e.g. via curl with the
+   pre-challenge cookie) returns 401.
 
 Steps 2, 6 and 7 involve real accounts — they must be
 completed manually on the deployment.
@@ -217,3 +238,14 @@ Code and schema are both recoverable:
 * The Supabase free tier limits concurrent edge/DB connections;
   tune `maxDuration` on `app/api/documents/ingest/route.ts` if the
   host caps function duration.
+* MFA enforcement in this app is **application-level**: the login
+  challenge, the middleware page gate and the API 401s cover every
+  path the app owns. Data fetched **directly through PostgREST**
+  with a password-only (AAL1) JWT — e.g. a user running a custom
+  client — is not gated by app code. If you enable MFA, consider
+  adding RLS policies that check `(auth.jwt()->>'aal')` for
+  sensitive tables, following Supabase's MFA guide
+  (<https://supabase.com/docs/guides/auth/auth-mfa>). Such
+  policies are **not** part of migrations `0001`–`0008` and are
+  not covered by the test suite — review and apply them
+  deliberately.

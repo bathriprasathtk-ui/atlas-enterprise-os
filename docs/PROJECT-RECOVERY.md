@@ -150,7 +150,7 @@ SSO button behind `NEXT_PUBLIC_ENABLE_GOOGLE_LOGIN`; dead
 | Check | Result |
 |---|---|
 | `npm test` | **67/67 pass** (+articles/mail validators) |
-| `npm run test:db` | **81/81 pass** — 0001–0007 on PostgreSQL 18 + pgvector 0.8.6, full RBAC matrix, membership-audit triggers, article versions, second idempotent pass |
+| `npm run test:db` | **87/87 pass** — 0001–0008 on PostgreSQL 18 + pgvector 0.8.6, full RBAC matrix, membership-audit triggers, article versions, invitation expiry, second idempotent pass |
 | `npm run test:e2e` | **17/17 pass** — real `next start` build: health, pages, middleware redirects, API 401s |
 | `npm run typecheck` / `npm run lint` | exit 0 / 0 problems |
 | `npm run build` | exit 0, 26 routes (incl. articles list + editor), without env vars |
@@ -175,9 +175,9 @@ credentials (§4). Status of every PRD/SRS requirement is tracked in
 | **No Supabase project/credentials** in sandbox | Cannot live-test auth, signup/reset emails, Storage API, RLS through the app, MFA enrolment | All migrations + RLS/RBAC verified on local PostgreSQL 18; user runs §9 checklist |
 | **No GEMINI_API_KEY** | Cannot exercise live chat/embeddings | Routes return explicit 503; 9 unit tests mock `fetch` |
 | **No Docker in sandbox** | Image not built here | Dockerfile + HEALTHCHECK written; the `docker` CI job builds it on GitHub |
-| **`0001`–`0007` unapplied to a hosted project** | Semantic search, orgs, articles dead until applied | Verified locally incl. pgvector 0.8.6; apply in order on the target project (DEPLOYMENT §4) |
+| **`0001`–`0008` unapplied to a hosted project** | Semantic search, orgs, articles dead until applied | Verified locally incl. pgvector 0.8.6; apply in order on the target project (DEPLOYMENT §4) |
 | **No `KNOCK_API_KEY`** (email provider account) | Invitation emails skip with an honest "not configured" message | Create a Knock account, connect a provider, define the `org_invitation` workflow, set the env var (DEPLOYMENT §2) |
-| **MFA enforcement needs a live project** | Enrol/verify/disable UI works; requiring AAL2 at sign-in is a Supabase dashboard setting + login-challenge flow | Test a real sign-in with MFA enforced before flipping it on |
+| **MFA end-to-end untested (needs a live project)** | Enrol/verify/disable UI, the `/login` code challenge, and app-level AAL2 enforcement (middleware gate, `getRouteAuth()`, `/api/ai/ask` 401) are all shipped; only a real Supabase sign-in cannot be exercised here | Test a real sign-in with a TOTP factor before enabling MFA for users (DEPLOYMENT §3 item 5, §7 step 9) |
 | **Lint debt** | — | **CLEARED**: lint is 0 problems and blocking in CI |
 | **42 zero-byte placeholder files** | Dead weight (all unused, zero importers) | Analysis in §6; removal deferred to an approved cleanup |
 | Next 16 `middleware` deprecation warning | Cosmetic today | Rename `middleware.ts` → `proxy.ts` on next upgrade (see DEPLOYMENT §9) |
@@ -197,7 +197,7 @@ Every item traces to `docs/REQUIREMENTS-STATUS.md`.
       update, membership+RBAC RLS replacing owner-only policies,
       personal-org backfill, idempotent
 - [x] A2 DB suite: two organizations fully isolated; role rules;
-      invited user joins; backfill correctness (part of 81/81)
+      invited user joins; backfill correctness (part of 87/87)
 - [x] A3 `lib/orgs.ts` + org scoping in every data lib
       (explicit `.eq("organization_id", …)` on top of RLS) and
       organization_id on every insert
@@ -241,15 +241,21 @@ Every item traces to `docs/REQUIREMENTS-STATUS.md`.
 ### D. MFA / SSO (REQ-AUTH-003, PRD 9.1)
 - [~] D1 Settings → Two-factor section shipped with real
       supabase-js MFA APIs (enroll/verify/disable TOTP, pending-
-      factor restart). Requiring AAL2 at sign-in + the login
-      challenge flow need a live Supabase project (§4) — do not
-      enforce before testing a real sign-in
+      factor restart), plus a sign-in challenge on `/login` and
+      app-level enforcement (middleware keeps AAL1 out of
+      `/workspace`; `getRouteAuth()`/`/api/ai/ask` answer 401
+      until AAL2 — Supabase never challenges on its own). Only
+      the live end-to-end sign-in needs a real project (§4);
+      do not enable MFA for users before that test
 - [x] D2 Google SSO button shipped behind
       `NEXT_PUBLIC_ENABLE_GOOGLE_LOGIN=1` + provider config in
       Supabase; hidden otherwise (nothing fake rendered)
-- [~] D3 Unit tests cover the honest mail degradation; MFA flows
-      are network-bound to a live project and cannot be unit-tested
-      here (documented, not skipped silently)
+- [~] D3 Unit tests cover the honest mail degradation and the
+      MFA decision helpers (`isMfaPending`,
+      `selectVerifiedTotpFactor` — 7 assertions); the full
+      challenge flow is network-bound to a live project and
+      cannot be unit-tested here (documented, not skipped
+      silently)
 
 ### E. Verification infrastructure (adds integration/E2E to unit tests)
 - [x] E1 Real pgvector: PostgreSQL 18 + pgvector 0.8.6 applied and

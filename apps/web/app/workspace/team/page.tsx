@@ -99,6 +99,10 @@ export default function TeamPage() {
   const [invitations, setInvitations] = useState<OrgInvitation[]>(
     []
   );
+
+  /* Page-load timestamp: invitation expiry is compared against
+     this rather than calling Date.now() during render. */
+  const [loadedAt] = useState(() => Date.now());
   const [role, setRole] = useState<OrgRole | null>(null);
   const [userId, setUserId] = useState<string | null>(null);
 
@@ -535,8 +539,8 @@ export default function TeamPage() {
 
             <p className="mt-1 text-xs text-slate-600">
               Invited accounts appear here until they accept.
-              Atlas does not send email yet — tell the invitee
-              to sign up with the invited address.
+              Invitations expire after 7 days — re-inviting the
+              same address extends the window.
             </p>
           </div>
 
@@ -599,40 +603,53 @@ export default function TeamPage() {
             </p>
           ) : (
             <div className="space-y-2">
-              {invitations.map((invitation) => (
-                <div
-                  key={invitation.id}
-                  className="flex items-center justify-between gap-3 rounded-xl border border-white/[0.05] bg-black/[0.08] p-3.5"
-                >
-                  <div className="min-w-0">
-                    <p className="flex items-center gap-1.5 truncate text-sm text-slate-300">
-                      <Mail size={13} className="shrink-0" />
-                      <span className="truncate">
-                        {invitation.email}
-                      </span>
-                    </p>
+              {invitations.map((invitation) => {
+                const expired =
+                  new Date(invitation.expires_at).getTime() <=
+                  loadedAt;
 
-                    <p className="mt-0.5 text-[11px] text-slate-600">
-                      {ROLE_LABEL[invitation.role]} · sent{" "}
-                      {formatDate(invitation.created_at)}
-                    </p>
-                  </div>
-
-                  <button
-                    type="button"
-                    disabled={busy}
-                    onClick={() =>
-                      void run(
-                        () => revokeInvitation(invitation.id),
-                        "Invitation revoked."
-                      )
-                    }
-                    className="shrink-0 rounded-lg border border-white/[0.08] px-3 py-1.5 text-xs text-slate-400 transition-colors hover:border-red-400/30 hover:text-red-300 disabled:cursor-not-allowed disabled:opacity-50"
+                return (
+                  <div
+                    key={invitation.id}
+                    className="flex items-center justify-between gap-3 rounded-xl border border-white/[0.05] bg-black/[0.08] p-3.5"
                   >
-                    Revoke
-                  </button>
-                </div>
-              ))}
+                    <div className="min-w-0">
+                      <p className="flex items-center gap-1.5 truncate text-sm text-slate-300">
+                        <Mail size={13} className="shrink-0" />
+                        <span className="truncate">
+                          {invitation.email}
+                        </span>
+                      </p>
+
+                      <p className="mt-0.5 text-[11px] text-slate-600">
+                        {ROLE_LABEL[invitation.role]} · sent{" "}
+                        {formatDate(invitation.created_at)}{" "}
+                        {expired ? (
+                          <span className="text-amber-400/80">
+                            · expired — invite again to extend
+                          </span>
+                        ) : (
+                          `· expires ${formatDate(invitation.expires_at)}`
+                        )}
+                      </p>
+                    </div>
+
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={() =>
+                        void run(
+                          () => revokeInvitation(invitation.id),
+                          "Invitation revoked."
+                        )
+                      }
+                      className="shrink-0 rounded-lg border border-white/[0.08] px-3 py-1.5 text-xs text-slate-400 transition-colors hover:border-red-400/30 hover:text-red-300 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      Revoke
+                    </button>
+                  </div>
+                );
+              })}
             </div>
           )}
         </section>

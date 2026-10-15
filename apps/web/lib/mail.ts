@@ -67,6 +67,8 @@ export async function sendInvitationEmail(input: {
         email: input.to,
         organization_name: input.organizationName,
         invited_by_name: input.invitedByName,
+        /* Matches org_invitations.expires_at (migration 0008). */
+        expires_in_days: 7,
       },
     });
 

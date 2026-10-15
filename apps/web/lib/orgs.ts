@@ -50,6 +50,8 @@ export type OrgInvitation = {
   email: string;
   role: OrgRole;
   created_at: string;
+  /** Invitations expire 7 days after issue (0008). */
+  expires_at: string;
 };
 
 /* =========================================================
@@ -288,7 +290,7 @@ export async function getOrgInvitations(): Promise<
 
   const { data, error } = await supabase
     .from("org_invitations")
-    .select("id, email, role, created_at")
+    .select("id, email, role, created_at, expires_at")
     .eq("organization_id", snapshot.orgId)
     .order("created_at", { ascending: true });
 

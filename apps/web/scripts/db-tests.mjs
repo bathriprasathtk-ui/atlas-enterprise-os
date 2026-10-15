@@ -33,6 +33,7 @@ const C = "cccccccc-cccc-cccc-cccc-cccccccccccc";
 const D = "dddddddd-dddd-dddd-dddd-dddddddddddd";
 const E = "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee";
 const F = "ffffffff-ffff-ffff-ffff-ffffffffffff";
+const G = "99999999-9999-9999-9999-999999999999";
 
 let pass = 0;
 let fail = 0;
@@ -268,7 +269,8 @@ async function seedEra1(client, files) {
         .filter((f) =>
           !f.startsWith("0005") &&
           !f.startsWith("0006") &&
-          !f.startsWith("0007"))
+          !f.startsWith("0007") &&
+          !f.startsWith("0008"))
         .filter((f) => HAS_VECTOR || !f.startsWith("0002"))) {
     await client.query(readFileSync(join(MIG_DIR, file), "utf8"));
     console.log(`applied ${file}`);
@@ -321,6 +323,12 @@ async function seedEra1(client, files) {
     readFileSync(join(MIG_DIR, "0007_knowledge_articles.sql"), "utf8")
   );
   console.log("applied 0007_knowledge_articles.sql");
+
+  /* 0008 re-issues the invitation functions from 0005. */
+  await client.query(
+    readFileSync(join(MIG_DIR, "0008_invitation_expiry.sql"), "utf8")
+  );
+  console.log("applied 0008_invitation_expiry.sql");
 }
 
 async function testBackfill(client) {
@@ -486,6 +494,79 @@ async function testInviteFlow(client, orgs) {
     client, `select public.create_organization('Own Org')`);
   check("D (member) cannot create another organization",
     Boolean(err) && /already belong/.test(err.message));
+
+  await client.query("reset role");
+  await asUser(client, null);
+}
+
+async function testInvitationExpiry(client, orgs) {
+  /* 0008: a fresh invitee so later suites are unaffected. */
+  await createUser(client, G, "g@atlas.test", "Gina Expiry");
+  await grants(client);
+
+  await asUser(client, A);
+  await client.query("set role authenticated");
+  await client.query(
+    `select public.invite_member('g@atlas.test')`);
+
+  let row = await client.query(
+    `select id, (expires_at > now()) as future
+     from public.org_invitations
+     where lower(email) = 'g@atlas.test'`);
+  check("new invitation carries a future expiry",
+    row.rows.length === 1 && row.rows[0].future === true,
+    JSON.stringify(row.rows));
+  const invId = row.rows[0]?.id;
+
+  /* Expire it (superuser: simulates the clock moving on). */
+  await client.query("reset role");
+  await asUser(client, null);
+  await client.query(
+    `update public.org_invitations
+     set expires_at = now() - interval '1 second'
+     where lower(email) = 'g@atlas.test'`);
+
+  await asUser(client, G);
+  await client.query("set role authenticated");
+
+  let mine = await client.query(
+    `select * from public.my_invitations()`);
+  check("expired invitation is hidden from the invitee",
+    mine.rows.length === 0, JSON.stringify(mine.rows));
+
+  let err = await expectError(
+    client, `select public.accept_invitation($1)`, [invId]);
+  check("expired invitation cannot be accepted",
+    Boolean(err) && /expired/.test(err.message), err?.message);
+
+  /* Re-inviting the same address restarts the window. */
+  await asUser(client, A);
+  await client.query("set role authenticated");
+  await client.query(
+    `select public.invite_member('g@atlas.test')`);
+
+  await client.query("reset role");
+  await asUser(client, null);
+  row = await client.query(
+    `select (expires_at > now()) as future
+     from public.org_invitations
+     where lower(email) = 'g@atlas.test'`);
+  check("re-inviting refreshes the expiry",
+    row.rows.length === 1 && row.rows[0].future === true);
+
+  await asUser(client, G);
+  await client.query("set role authenticated");
+
+  mine = await client.query(
+    `select * from public.my_invitations()`);
+  check("re-invited user sees the invitation again",
+    mine.rows.length === 1, JSON.stringify(mine.rows));
+
+  const accepted = await client.query(
+    `select public.accept_invitation($1) as id`,
+    [mine.rows[0]?.id]);
+  check("re-invited user accepts and joins",
+    accepted.rows[0]?.id === orgs.orgA);
 
   await client.query("reset role");
   await asUser(client, null);
@@ -1169,6 +1250,9 @@ async function main() {
 
     console.log("\n-- invitation flow --");
     await testInviteFlow(client, orgs);
+
+    console.log("\n-- invitation expiry (0008) --");
+    await testInvitationExpiry(client, orgs);
 
     console.log("\n-- sharing + RBAC --");
     await testSharingAndRbac(client, orgs);

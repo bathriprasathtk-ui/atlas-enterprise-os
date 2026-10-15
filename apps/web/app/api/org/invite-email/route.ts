@@ -65,7 +65,7 @@ export async function POST(request: Request) {
   /* The invitation must exist in the caller's org. */
   const { data: invitation } = await supabase
     .from("org_invitations")
-    .select("id")
+    .select("id, expires_at")
     .eq("organization_id", membership.organization_id)
     .eq("email", email)
     .maybeSingle();
@@ -77,6 +77,20 @@ export async function POST(request: Request) {
           "No pending invitation for that address in this organization.",
       },
       { status: 404 }
+    );
+  }
+
+  /* Expired invitations cannot be accepted (0008) — refuse to
+     mail one instead of sending a link that will bounce. */
+  if (
+    new Date(invitation.expires_at).getTime() <= Date.now()
+  ) {
+    return NextResponse.json(
+      {
+        error:
+          "That invitation has expired. Re-invite the address to extend it.",
+      },
+      { status: 409 }
     );
   }
 
